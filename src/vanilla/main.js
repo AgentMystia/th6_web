@@ -6,6 +6,7 @@ const MOVE_AREA = { x: 8, y: 16, right: 376, bottom: 432 };
 const STEP_MS = 1000 / 60;
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
+const ANGLE_EPSILON = 1e-6;
 const TH06_LOGIC = TH06_GLOBAL.TH06Logic;
 const TH06_PLAYER_DATA = TH06_GLOBAL.TH06PlayerData;
 if (!TH06_LOGIC) throw new Error('TH06Logic source tables must be loaded before main.js');
@@ -339,7 +340,9 @@ function dist2(a, b) {
 }
 
 function normalizeLocalAngle(v) {
-  while (v <= -Math.PI) v += TAU;
+  if (Math.abs(v - Math.PI) <= ANGLE_EPSILON) return Math.PI;
+  if (Math.abs(v + Math.PI) <= ANGLE_EPSILON) return -Math.PI;
+  while (v < -Math.PI) v += TAU;
   while (v > Math.PI) v -= TAU;
   return v;
 }
@@ -1990,7 +1993,10 @@ class Renderer {
     const stageBgKey = g.stageAssets?.stageBg || 'stg1bg';
     this.rect(0, 0, 640, 480, '#050509');
     this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#090b18');
-    if (g.stageRuntime) this.stageStd(g.stageRuntime.std);
+    if (g.stageRuntime) {
+      if (this.currentStageNumber === 2) this.stageStdPlanar(g.stageRuntime.std);
+      else this.stageStd(g.stageRuntime.std);
+    }
     else {
       this.stageTextureBase(stageBgKey, fog);
     }
@@ -2172,6 +2178,61 @@ class Renderer {
       if (!top || !bottom) continue;
       this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * i / steps, rect.h * (i + 1) / steps);
     }
+  }
+  stageDrawPlanarQuad(img, rect, x, y, w, h, color) {
+    const ctx = this.ctx;
+    const tint = (color & 0x00ffffff) !== 0x00ffffff;
+    let drawImg = img;
+    if (tint) {
+      this.tintCanvas.width = img.width;
+      this.tintCanvas.height = img.height;
+      const tctx = this.tintCtx;
+      tctx.clearRect(0, 0, img.width, img.height);
+      tctx.globalCompositeOperation = 'source-over';
+      tctx.drawImage(img, 0, 0);
+      const c = colorParts(color);
+      tctx.globalCompositeOperation = 'multiply';
+      tctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
+      tctx.fillRect(0, 0, img.width, img.height);
+      tctx.globalCompositeOperation = 'destination-in';
+      tctx.drawImage(img, 0, 0);
+      tctx.globalCompositeOperation = 'source-over';
+      drawImg = this.tintCanvas;
+    }
+    ctx.drawImage(drawImg, rect.x, rect.y, rect.w, rect.h, PLAYFIELD.x + x, PLAYFIELD.y + y, w, h);
+  }
+  stageStdPlanar(std) {
+    const ctx = this.ctx;
+    const cam = std.camera(this.game.stageFrame);
+    const stageBgKey = this.game.stageAssets?.stageBg || 'stg2bg';
+    const img = this.assets[stageBgKey];
+    if (!img) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.clip();
+    for (let zLevel = 0; zLevel < 4; zLevel++) {
+      for (const inst of std.instances) {
+        const obj = std.objects[inst.id];
+        if (!obj || obj.zLevel !== zLevel) continue;
+        for (const q of obj.quads) {
+          const rect = std.anm.scriptSprite(q.script, 0, this.game.stageFrame, { keepExitSprite: true });
+          if (!rect) continue;
+          const vmX = q.x + inst.x - cam.x;
+          const vmY = q.y + inst.y - cam.y;
+          const rawW = Math.max(0.001, q.w || rect.w * Math.abs(rect.scaleX || 1));
+          const rawH = Math.max(0.001, q.h || rect.h * Math.abs(rect.scaleY || 1));
+          if (vmX + rawW < -32 || vmX > PLAYFIELD.width + 32 || vmY + rawH < -32 || vmY > PLAYFIELD.height + 32) continue;
+          ctx.save();
+          ctx.globalAlpha = (rect.alpha ?? 255) / 255;
+          ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
+          const color = (rect.color ?? 0xffffffff) >>> 0;
+          this.stageDrawPlanarQuad(img, rect, vmX, vmY, rawW, rawH, color);
+          ctx.restore();
+        }
+      }
+    }
+    ctx.restore();
   }
   stageStd(std) {
     const ctx = this.ctx;

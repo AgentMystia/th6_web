@@ -4,6 +4,7 @@
   if (!TH06_LOGIC) throw new Error('TH06Logic source tables must be loaded before th06-runtime.js');
   const TAU = Math.PI * 2;
   const DEG = Math.PI / 180;
+  const ANGLE_EPSILON = 1e-6;
   const ACTIVE_ECL_DIFFICULTY = 3; // Lunatic first: reproduce the densest original script path.
   const ENEMY_BULLET_CAP = TH06_LOGIC.ENEMY_BULLET_CAP ?? 640;
   const ITEM_TABLE = ['power', 'point', 'bigPower', 'bomb', 'fullPower', 'life', 'point'];
@@ -33,7 +34,9 @@
   }
 
   function normalizeAngle(v) {
-    while (v <= -Math.PI) v += TAU;
+    if (Math.abs(v - Math.PI) <= ANGLE_EPSILON) return Math.PI;
+    if (Math.abs(v + Math.PI) <= ANGLE_EPSILON) return -Math.PI;
+    while (v < -Math.PI) v += TAU;
     while (v > Math.PI) v -= TAU;
     return v;
   }
