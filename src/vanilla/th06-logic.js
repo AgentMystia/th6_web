@@ -15,25 +15,63 @@
   const STAGE1_META = {
     stageNumber: 1,
     title: {
-      primary: 'STAGE 1',
-      japanese: '夢幻夜行絵巻',
-      english: 'Mystic Flier'
+      primary: '第一关',
+      original: 'STAGE 1',
+      japanese: '梦幻夜行绘卷',
+      english: '神秘飞行者'
     },
     presentation: {
       introFrames: 240,
       clearAfterFrame: 7600,
       itemBorderLine: { start: 58, end: 174 }
     },
-    bossName: 'Rumia',
+    bossName: '露米娅',
     spells: [
-      'Moon Sign "Moonlight Ray"',
-      'Night Sign "Night Bird"',
-      'Darkness Sign "Demarcation"'
+      '月符「月光」',
+      '夜符「夜雀」',
+      '暗符「境界线」'
     ],
     music: ['stage1', 'boss1'],
-    musicLabels: ['A Soul as Red as a Ground Cherry', 'Apparitions Stalk the Night'],
+    musicLabels: ['如鬼灯般的红色之魂', '妖魔夜行'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦'
   };
+
+  const STAGE2_META = {
+    stageNumber: 2,
+    title: {
+      primary: '第二关',
+      original: 'STAGE 2',
+      japanese: '湖上的魔精',
+      english: '水之魔术师'
+    },
+    presentation: {
+      introFrames: 240,
+      clearAfterFrame: 9000,
+      itemBorderLine: { start: 58, end: 174 }
+    },
+    bossName: '琪露诺',
+    midbossName: '大妖精',
+    bossFaces: ['face05a', 'face05a'],
+    spells: [
+      '冰符「冰柱坠落」',
+      '雹符「冰雹暴风」',
+      '冻符「完美冻结」',
+      '雪符「钻石风暴」'
+    ],
+    music: ['stage2', 'boss2'],
+    musicLabels: ['露奈特精灵', '活泼的纯情小姑娘'],
+    dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦'
+  };
+
+  const STAGE_META = {
+    1: STAGE1_META,
+    2: STAGE2_META
+  };
+
+  const SPELL_NAMES = [
+    ...STAGE1_META.spells,
+    ...STAGE2_META.spells
+  ];
 
   const DIFFICULTY_INFO = {
     easy: { rank: 16, minRank: 12, maxRank: 20 },
@@ -44,6 +82,10 @@
   };
 
   const POWER_UP_THRESHOLDS = [8, 16, 32, 48, 64, 80, 96, 128, 999, 1, 0];
+  const EXTRA_LIFE_SCORES = [10000000, 20000000, 40000000, 60000000, 1900000000];
+  const MAX_SCORE = 999999999;
+  const MAX_LIVES = 8;
+  const ENEMY_BULLET_CAP = 640;
   const POWER_ITEM_SCORE = [
     10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700,
     800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000,
@@ -132,7 +174,54 @@
     '良薬は口に苦し': '你知道“良药苦口”',
     'って言葉知ってる？': '这句话吗？',
     '良薬っていっても': '虽说是良药',
-    '飲んでみなけりゃわかんないけどね': '不喝下去也不会知道呢'
+    '飲んでみなけりゃわかんないけどね': '不喝下去也不会知道呢',
+    'こういう気持ち、なんというか･･･': '这种感觉，该怎么说呢……',
+    'あいつだったら「気持ちいいわね」': '要是那家伙的话，大概会说“真舒服呢”',
+    'とかいいそうだな': '之类的话吧',
+    'わたしは夜は嫌いだけどな': '不过我讨厌夜晚',
+    '変な奴しかいないし': '净是些奇怪的家伙',
+    '変な奴って誰のことよ': '你说奇怪的家伙是谁啊',
+    '誰もあんたのことって言ってないぜ': '我可没说是在说你',
+    'それはまぁ、当然': '那倒也是，当然啦',
+    'で、何でそんな手広げてるのさ': '所以，你为什么把手张那么开？',
+    '「聖者は十字架に磔られました」': '看起来像是在说“圣者被钉在十字架上了”吗？',
+    'っていってるように見える？': '看起来像这样吗？',
+    '「人類は十進法を採用しました」': '看起来像是在说“人类采用了十进制”',
+    'って見えるな': '倒是更像这个',
+    '人類以外は': '人类以外的生物',
+    '指は十本じゃないのかしら': '手指难道不是十根吗？',
+    'この湖こんなに広かったかしら？': '这湖有这么宽吗？',
+    '霧で見通しが悪くて困ったわ。': '雾太大看不清，真麻烦。',
+    'もしかして私って方向音痴？': '难道说我是路痴？',
+    '道に迷うは、妖精の所為なの': '迷路都是妖精的错哦',
+    '湖上の氷精': '湖上的冰精',
+    'チルノ': '琪露诺',
+    'あらそう？、じゃ、案内して？': '是吗？那你来带路吧？',
+    'ここら辺に島があったでしょ？': '这附近应该有座岛吧？',
+    'あんた、ちったぁ驚きなさいよ': '你多少给我惊讶一下啊',
+    '目の前に強敵がいるのよ？': '强敌可就在你眼前哦？',
+    '標的？': '目标？',
+    'こいつはびっくりだぁね': '这可真叫人吃惊呢',
+    'ふざけやがって～': '你竟敢耍我～',
+    'あんたなんて、英吉利牛と一緒に': '像你这种家伙，就和英国牛一起',
+    '冷凍保存してやるわ！！': '冷冻保存起来吧！！',
+    'ああ、冷えてきたわ': '啊，开始冷起来了',
+    '冷房病になっちゃうわ': '要得空调病了',
+    '島は確かこの辺だったような気が': '岛应该就在这一带吧',
+    'するが・・・': '我记得是这样……',
+    'もしかして移動してるのか？': '难道它在移动吗？',
+    'それにしても・・・': '话说回来……',
+    'おおよそ夏だぜ': '现在差不多是夏天吧',
+    'なんでこんなに冷えるんだ？': '为什么会这么冷？',
+    'もう二度と陸には上がらせないよ！': '我不会再让你上岸了！',
+    'あんたね。寒いのは': '我说你啊，冷一点',
+    '暑いよりはいいでしょ？': '总比热得要命好吧？',
+    '寒い奴': '冷场的家伙',
+    'それはなにか違う・・・': '这说法好像不太对……',
+    'いっぱいいっぱいなんだろ？': '你已经忙不过来了吧？',
+    'ああ、半袖じゃ体に悪いわ': '啊，穿短袖这样下去会伤身体',
+    '早く、お茶でも出してくれるお屋敷': '快去找个会端茶出来的洋馆',
+    '探そう、っと': '找找看吧'
   }));
 
   function clamp(v, min, max) {
@@ -217,6 +306,17 @@
   function spellcardBonus(spellId, secondsRemaining) {
     const base = SPELLCARD_SCORE[((spellId | 0) % SPELLCARD_SCORE.length + SPELLCARD_SCORE.length) % SPELLCARD_SCORE.length];
     return base + Math.trunc(base * Math.max(0, secondsRemaining | 0) / 10);
+  }
+
+  function stageClearBonus({ stageNumber, power, graze, pointItems, difficulty, lives = 0, bombs = 0 }) {
+    let score = ((stageNumber | 0) * 1000) + ((graze | 0) * 10) + ((power | 0) * 100);
+    score *= Math.max(0, pointItems | 0);
+    if ((stageNumber | 0) >= 6) score += (lives | 0) * 3000000 + (bombs | 0) * 1000000;
+    if (difficulty === 'easy') score = Math.trunc(score / 2);
+    else if (difficulty === 'hard') score = Math.trunc(score * 12 / 10);
+    else if (difficulty === 'lunatic') score = Math.trunc(score * 15 / 10);
+    else if (difficulty === 'extra') score *= 2;
+    return score - score % 10;
   }
 
   function shootIntervalForRank(baseInterval, rank) {
@@ -520,16 +620,34 @@
     return name;
   }
 
+  function stageMeta(stageNumber) {
+    const meta = STAGE_META[stageNumber | 0];
+    if (!meta) throw new Error(`Unknown TH06 stage metadata: ${stageNumber}`);
+    return meta;
+  }
+
+  function spellName(index) {
+    const name = SPELL_NAMES[index | 0];
+    if (!name) throw new Error(`Unknown TH06 spell index: ${index}`);
+    return name;
+  }
+
   globalThis.TH06Logic = {
     DIALOGUE_ZH_CN,
     DIFFICULTY_INFO,
     POWER_UP_THRESHOLDS,
+    EXTRA_LIFE_SCORES,
+    MAX_SCORE,
+    MAX_LIVES,
+    ENEMY_BULLET_CAP,
     POWER_ITEM_SCORE,
     SPELLCARD_SCORE,
     PLAYER_SYSTEM,
     BULLET_TYPE_NAMES,
     SFX_BUFFER_IDX_VOLUME,
     STAGE1_META,
+    STAGE2_META,
+    STAGE_META,
     bulletGrazeSize,
     adjustRankState,
     collectPowerItem,
@@ -538,13 +656,16 @@
     pointBulletScore,
     pointItemScore,
     spellcardBonus,
+    stageClearBonus,
     createReimuABomb,
     createReimuBBomb,
     createMarisaABomb,
     createMarisaBBomb,
     localizeDialogueText,
     missPowerDrops,
+    stageMeta,
     stage1SpellName,
+    spellName,
     updateHomingBullet,
     chooseHomingTarget,
     playerShotDamageForEnemy,

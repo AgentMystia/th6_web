@@ -48,6 +48,27 @@ const HUD_STARS = {
   player: { x: 29, y: 239 },
   bomb: { x: 48, y: 239 }
 };
+const FRONT_SPRITES = {
+  logoEast: { x: 1, y: 1, w: 62, h: 62 },
+  logoTo: { x: 65, y: 1, w: 62, h: 62 },
+  logoRed: { x: 129, y: 1, w: 62, h: 62 },
+  logoDevil: { x: 193, y: 1, w: 62, h: 62 },
+  logoTown: { x: 1, y: 65, w: 62, h: 62 },
+  panelTile: { x: 0, y: 224, w: 32, h: 32 },
+  topBorder: { x: 0, y: 224, w: 32, h: 16 },
+  bottomBorder: { x: 0, y: 240, w: 32, h: 16 },
+  scoreLabel: { x: 0, y: 208, w: 32, h: 16 },
+  hiScoreLabel: { x: 0, y: 192, w: 64, h: 16 },
+  playerLabel: { x: 0, y: 176, w: 64, h: 16 },
+  bombLabel: { x: 0, y: 160, w: 48, h: 16 },
+  powerLabel: { x: 32, y: 208, w: 48, h: 16 },
+  grazeLabel: { x: 32, y: 224, w: 48, h: 16 },
+  pointLabel: { x: 48, y: 160, w: 16, h: 16 },
+  playerStar: { x: 32, y: 240, w: 16, h: 16 },
+  bombStar: { x: 48, y: 240, w: 16, h: 16 },
+  maxLabel: { x: 64, y: 240, w: 48, h: 16 },
+  logoCircle: { x: 128, y: 128, w: 128, h: 128 }
+};
 const LASER_COLORS = [
   '#f8f8f8', '#ff3030', '#ff40ff', '#4058ff', '#40ffff', '#38ff38', '#ffff38',
   '#f8f8f8'
@@ -56,12 +77,15 @@ const LASER_COLORS = [
 const images = {
   titleBg: 'assets/th06-img/jpg/title00.jpg',
   selectBg: 'assets/th06-img/jpg/select00.jpg',
-  stageBg: 'assets/th06-img/png/stg1bg.png',
+  stg1bg: 'assets/th06-img/png/stg1bg.png',
+  stg2bg: 'assets/th06-img/png/stg2bg.png',
   front: 'assets/th06-img/png/front.png',
   player00: 'assets/th06-img/png/player00.png',
   player01: 'assets/th06-img/png/player01.png',
   stg1enm: 'assets/th06-img/png/stg1enm.png',
   stg1enm2: 'assets/th06-img/png/stg1enm2.png',
+  stg2enm: 'assets/th06-img/png/stg2enm.png',
+  stg2enm2: 'assets/th06-img/png/stg2enm2.png',
   etama3: 'assets/th06-img/png/etama3.png',
   etama4: 'assets/th06-img/png/etama4.png',
   eff01: 'assets/th06-img/png/eff01.png',
@@ -72,7 +96,8 @@ const images = {
   face01b: 'assets/th06-img/png/face01b.png',
   face01c: 'assets/th06-img/png/face01c.png',
   face03a: 'assets/th06-img/png/face03a.png',
-  face03b: 'assets/th06-img/png/face03b.png'
+  face03b: 'assets/th06-img/png/face03b.png',
+  face05a: 'assets/th06-img/png/face05a.png'
 };
 
 const chars = [
@@ -189,7 +214,9 @@ class AudioBus {
   constructor() {
     this.tracks = {
       stage1: new Audio('assets/audio/stage1.mp3'),
-      boss1: new Audio('assets/audio/boss1.mp3')
+      boss1: new Audio('assets/audio/boss1.mp3'),
+      stage2: new Audio('assets/audio/th06_04.mp3'),
+      boss2: new Audio('assets/audio/th06_05.mp3')
     };
     for (const audio of Object.values(this.tracks)) {
       audio.loop = true;
@@ -245,13 +272,17 @@ class AudioBus {
     } catch {}
   }
   playBgm(id, options = {}) {
-    if (this.active === id) return;
-    const previous = this.active ? this.tracks[this.active] : null;
+    if (this.active === id) {
+      this.stopTracksExcept(id);
+      return;
+    }
     const next = id ? this.tracks[id] : null;
     this.active = id;
     this.pendingLabel = options.label || '';
+    this.stopTracksExcept(id);
     if (next) {
       next.currentTime = options.restart === false ? next.currentTime : 0;
+      next.volume = 0;
       if (this.unlocked) next.play().catch(() => {});
     }
     const token = ++this.fadeToken;
@@ -260,27 +291,34 @@ class AudioBus {
     const fade = (now) => {
       if (token !== this.fadeToken) return;
       const t = Math.min(1, (now - start) / duration);
-      if (previous) {
-        previous.volume = 0.65 * (1 - t);
-        if (t === 1) previous.pause();
-      }
       if (next) next.volume = 0.65 * t;
       if (t < 1) requestAnimationFrame(fade);
     };
     requestAnimationFrame(fade);
   }
+  stopTracksExcept(activeId = null) {
+    for (const [trackId, audio] of Object.entries(this.tracks)) {
+      if (trackId === activeId) continue;
+      try {
+        audio.pause();
+        audio.volume = 0;
+      } catch {}
+    }
+  }
   fadeOutBgm(seconds = 4) {
-    const previous = this.active ? this.tracks[this.active] : null;
+    const tracks = Object.values(this.tracks);
+    const startVolumes = new Map(tracks.map((audio) => [audio, audio.volume || 0]));
     this.active = null;
     const token = ++this.fadeToken;
     const start = performance.now();
     const duration = Math.max(1, seconds * 1000);
-    const startVolume = previous?.volume ?? 0;
     const fade = (now) => {
-      if (token !== this.fadeToken || !previous) return;
+      if (token !== this.fadeToken) return;
       const t = Math.min(1, (now - start) / duration);
-      previous.volume = startVolume * (1 - t);
-      if (t === 1) previous.pause();
+      for (const audio of tracks) audio.volume = (startVolumes.get(audio) || 0) * (1 - t);
+      if (t === 1) {
+        for (const audio of tracks) audio.pause();
+      }
       else requestAnimationFrame(fade);
     };
     requestAnimationFrame(fade);
@@ -304,6 +342,11 @@ function normalizeLocalAngle(v) {
   while (v <= -Math.PI) v += TAU;
   while (v > Math.PI) v -= TAU;
   return v;
+}
+
+function normalize3(x, y, z) {
+  const len = Math.hypot(x, y, z) || 1;
+  return { x: x / len, y: y / len, z: z / len };
 }
 
 function colorParts(color) {
@@ -423,11 +466,24 @@ class Game {
     this.selected = 0;
     this.track = null;
     this.audio = null;
-    const stageData = window.TH06_EMBEDDED_DATA?.games?.th06?.stages?.[1];
-    if (!window.Th06StageRuntime || !stageData) throw new Error('Original Stage 1 ECL/STD runtime data is missing');
-    this.stageRuntime = new window.Th06StageRuntime(stageData);
-    this.stageMeta = TH06_LOGIC.STAGE1_META;
+    this.stages = window.TH06_EMBEDDED_DATA?.games?.th06?.stages;
+    if (!window.Th06StageRuntime || !this.stages?.[1]) throw new Error('Original TH06 ECL/STD runtime data is missing');
+    this.currentStageNumber = 1;
+    this.loadStage(1);
     this.reset();
+  }
+  loadStage(stageNumber) {
+    const stageData = this.stages?.[stageNumber];
+    if (!stageData) throw new Error(`Original TH06 Stage ${stageNumber} ECL/STD runtime data is missing`);
+    this.currentStageNumber = stageNumber;
+    this.stageData = stageData;
+    this.stageRuntime = new window.Th06StageRuntime(stageData);
+    this.stageMeta = TH06_LOGIC.stageMeta(stageNumber);
+    this.stageAssets = {
+      stageBg: stageData.assets?.stageBgKey || `stg${stageNumber}bg`,
+      enemy: stageData.assets?.enemyKey || `stg${stageNumber}enm`,
+      enemy2: stageData.assets?.enemy2Key || `stg${stageNumber}enm2`
+    };
   }
   reset() {
     this.score = 0;
@@ -435,12 +491,18 @@ class Game {
     this.power = 0;
     this.lives = 2;
     this.bombs = 3;
-    this.graze = 0;
-    this.pointItemsCollectedInStage = 0;
     this.powerItemCountForScore = 0;
     this.spellcardsCaptured = 0;
+    this.extraLifeIndex = 0;
     this.difficulty = 'lunatic';
     this.rank = 16;
+    this.subRank = 0;
+    this.loadStage(1);
+    this.resetStageState();
+  }
+  resetStageState() {
+    this.pointItemsCollectedInStage = 0;
+    this.graze = 0;
     this.subRank = 0;
     this.stageFrame = 0;
     this.id = 1;
@@ -473,6 +535,7 @@ class Game {
     this.activeBombs = [];
     this.pendingEnemyDamage = new Map();
     this.spellcardInfo = { isActive: false, isCapturing: false, usedBomb: false };
+    this.stageClearResult = null;
     this.dialogue = null;
     this.lastEnemyHit = { x: -999, y: -999 };
     this.frameHomingTarget = null;
@@ -504,8 +567,21 @@ class Game {
   start() {
     this.reset();
     this.phase = 'playing';
-    this.track = 'stage1';
-    this.requestBgm('stage1', { fadeMs: 400, label: this.stageMeta.musicLabels[0] });
+    this.startStageBgm();
+  }
+  startStageBgm() {
+    const id = this.stageMeta.music[0];
+    this.track = id;
+    this.requestBgm(id, { fadeMs: 400, label: this.stageMeta.musicLabels[0] });
+  }
+  hasNextStage() {
+    return !!this.stages?.[this.currentStageNumber + 1];
+  }
+  startNextStage() {
+    this.loadStage(this.currentStageNumber + 1);
+    this.resetStageState();
+    this.phase = 'playing';
+    this.startStageBgm();
   }
   requestBgm(id, options = {}) {
     this.track = id;
@@ -516,6 +592,27 @@ class Game {
   fadeOutBgm(seconds = 4) {
     this.track = null;
     this.audio?.fadeOutBgm(seconds);
+  }
+  addScore(points) {
+    const amount = Math.trunc(points || 0);
+    if (amount <= 0) return;
+    this.score = Math.min(TH06_LOGIC.MAX_SCORE - 9, this.score + amount);
+    this.checkScoreExtends();
+  }
+  checkScoreExtends() {
+    while (
+      this.extraLifeIndex >= 0 &&
+      this.extraLifeIndex < TH06_LOGIC.EXTRA_LIFE_SCORES.length &&
+      TH06_LOGIC.EXTRA_LIFE_SCORES[this.extraLifeIndex] <= this.score
+    ) {
+      if (this.lives < TH06_LOGIC.MAX_LIVES) {
+        this.lives++;
+        this.audio?.sfx(SOUND.ONE_UP);
+      }
+      this.extraLifeIndex++;
+      this.increaseSubrank(200);
+      this.text('Extend!', 158, 180, 150, '#fff0a8');
+    }
   }
   increaseSubrank(amount) {
     const next = TH06_LOGIC.adjustRankState(this.rank, this.subRank, amount, this.difficulty);
@@ -595,7 +692,7 @@ class Game {
     this.bgmBanner = Math.max(0, this.bgmBanner - 1);
     const boss = this.enemies.find((e) => e.kind === 'boss' || e.ecl?.isBoss);
     const clearFrame = this.stageMeta.presentation.clearAfterFrame;
-    if (clearFrame == null) throw new Error('Missing original Stage 1 clear frame metadata');
+    if (clearFrame == null) throw new Error(`Missing original Stage ${this.currentStageNumber} clear frame metadata`);
     if (this.stageFrame > clearFrame && !boss && this.enemies.length === 0) this.clear();
   }
   updateMenu(input) {
@@ -637,7 +734,14 @@ class Game {
         this.audio?.sfx(SOUND.SELECT);
         this.phase = 'playing';
       }
-    } else if ((this.phase === 'stageClear' || this.phase === 'gameOver') && confirm) {
+    } else if (this.phase === 'stageClear' && confirm) {
+      this.audio?.sfx(SOUND.SELECT);
+      if (this.hasNextStage()) this.startNextStage();
+      else {
+        this.phase = 'title';
+        this.track = null;
+      }
+    } else if (this.phase === 'gameOver' && confirm) {
       this.audio?.sfx(SOUND.SELECT);
       this.phase = 'title';
       this.track = null;
@@ -687,12 +791,16 @@ class Game {
     return TH06_LOGIC.localizeDialogueText(text) || text || '';
   }
   spellNameFor(index) {
-    return this.stageMeta.spells[index] ?? TH06_LOGIC.stage1SpellName(index);
+    return TH06_LOGIC.spellName(index);
+  }
+  bossNameForEnemy(enemy) {
+    if (this.currentStageNumber === 2 && enemy?.score === 100000) return this.stageMeta.midbossName || '大妖精';
+    return this.stageMeta.bossName;
   }
   setBossPresent(present, enemy = null) {
     const ui = this.bossUi;
     ui.present = !!present;
-    ui.bossName = this.stageMeta.bossName;
+    ui.bossName = enemy ? this.bossNameForEnemy(enemy) : this.stageMeta.bossName;
     if (present && ui.state === 0) {
       ui.state = 1;
       ui.opacity = 0;
@@ -728,7 +836,7 @@ class Game {
     this.effects = this.effects.filter((effect) => !effect.spellEffect);
     if (this.spellcardInfo.isActive && this.spellcardInfo.isCapturing) {
       const bonus = TH06_LOGIC.spellcardBonus(this.spellcardInfo.idx || 0, this.bossUi.timerSeconds);
-      this.score += bonus;
+      this.addScore(bonus);
       this.spellcardsCaptured++;
       this.text('Spell Card Bonus!', 116, 98, 150, '#fff0a8');
       this.text(String(bonus), 154, 118, 150, '#fff0a8');
@@ -769,7 +877,7 @@ class Game {
       const instr = d.instrs[d.ptr];
       if (d.timer < instr.time) break;
       d.ptr++;
-      if (instr.op === 0 || instr.op === 11) {
+      if (instr.op === 0) {
         d.active = false;
         break;
       } else if (instr.op === 1 || instr.op === 2) {
@@ -788,12 +896,28 @@ class Game {
         d.resumeTickets++;
       } else if (instr.op === 7) {
         const id = this.stageMeta.music[instr.arg];
-        if (!id) throw new Error(`Missing original Stage 1 music slot ${instr.arg}`);
+        if (!id) throw new Error(`Missing original Stage ${this.currentStageNumber} music slot ${instr.arg}`);
         this.requestBgm(id, { fadeMs: 900, label: this.stageMeta.musicLabels[instr.arg] });
       } else if (instr.op === 8) {
         d.intro[instr.line] = this.localizeText(instr.text);
+      } else if (instr.op === 9) {
+        this.clear();
+        break;
+      } else if (instr.op === 10) {
+        d.waiting = true;
+        d.waitFrame = 0;
+        d.waitLimit = 999999;
+        break;
+      } else if (instr.op === 11) {
+        d.active = false;
+        break;
       } else if (instr.op === 12) {
         this.fadeOutBgm(4);
+      } else if (instr.op === 13) {
+        d.waiting = true;
+        d.waitFrame = 0;
+        d.waitLimit = Math.max(1, instr.arg || 1);
+        break;
       }
     }
     d.timer++;
@@ -1047,7 +1171,7 @@ class Game {
       if (this.spellcardInfo?.isActive) {
         applied = TH06_LOGIC.spellcardDamageForEnemy(capped, entry.hitWithBombRegion, this.spellcardInfo.usedBomb);
       }
-      this.score += Math.floor(capped / 5) * 10;
+      this.addScore(Math.floor(capped / 5) * 10);
       if (entry.bombed) e.bombed = true;
       if (applied <= 0) continue;
       e.hp -= applied;
@@ -1065,9 +1189,9 @@ class Game {
     this.lastEnemyHit = TH06_LOGIC.chooseHomingTarget(this.enemies);
   }
   cancelBulletsNear(x, y, radius) {
-    const radiusSq = radius * radius;
     this.enemyBullets = this.enemyBullets.filter((b) => {
-      const hitR = b.hitR ?? b.r ?? 0;
+      const half = this.enemyBulletHalfSize(b);
+      const hitR = Math.max(half.x, half.y);
       if (dist2({ x, y }, b) > (radius + hitR) ** 2) return true;
       this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
       return false;
@@ -1075,8 +1199,8 @@ class Game {
   }
   cancelBulletsInBox(x, y, w, h) {
     this.enemyBullets = this.enemyBullets.filter((b) => {
-      const hitR = b.hitR ?? b.r ?? 0;
-      if (Math.abs(b.x - x) > w / 2 + hitR || Math.abs(b.y - y) > h / 2 + hitR) return true;
+      const half = this.enemyBulletHalfSize(b);
+      if (Math.abs(b.x - x) > w / 2 + half.x || Math.abs(b.y - y) > h / 2 + half.y) return true;
       this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
       return false;
     });
@@ -1159,34 +1283,42 @@ class Game {
   }
   scoreGraze(center) {
     if (this.activeBombs.length === 0) this.graze++;
-    this.score += 500;
+    this.addScore(500);
     this.increaseSubrank(6);
     const px = center ? (this.player.x + center.x) / 2 : this.player.x;
     const py = center ? (this.player.y + center.y) / 2 : this.player.y;
     this.spawnEffectParticles(8, px, py, 1, 0xffffffff);
     this.audio?.sfx(SOUND.GRAZE);
   }
+  enemyBulletHalfSize(b) {
+    if (b.grazeSize) return { x: b.grazeSize.x / 2, y: b.grazeSize.y / 2 };
+    const r = b.hitR ?? b.r ?? 0;
+    return { x: r, y: r };
+  }
+  playerOverlapsEnemyBullet(b, padding = 0) {
+    const half = this.enemyBulletHalfSize(b);
+    return Math.abs(this.player.x - b.x) <= half.x + padding + PLAYER_HITBOX_HALF.x
+      && Math.abs(this.player.y - b.y) <= half.y + padding + PLAYER_HITBOX_HALF.y;
+  }
   updateEnemyBullets() {
     for (const b of this.enemyBullets) {
       this.updateEnemyBulletMotion(b);
       b.x += b.vx;
       b.y += b.vy;
-      const dx = Math.abs(this.player.x - b.x);
-      const dy = Math.abs(this.player.y - b.y);
-      const hitR = b.hitR ?? b.r;
       const playerCanGraze = this.player.state === 'alive' || this.player.state === 'invuln';
-      if (!b.grazed && dx <= hitR + PLAYER_GRAZE_PADDING + PLAYER_HITBOX_HALF.x && dy <= hitR + PLAYER_GRAZE_PADDING + PLAYER_HITBOX_HALF.y && playerCanGraze) {
+      if (!b.grazed && this.playerOverlapsEnemyBullet(b, PLAYER_GRAZE_PADDING) && playerCanGraze) {
         b.grazed = true;
         this.scoreGraze(b);
       }
-      if (dx <= hitR + PLAYER_HITBOX_HALF.x && dy <= hitR + PLAYER_HITBOX_HALF.y && this.player.state === 'alive') {
-        this.die();
+      if (this.playerOverlapsEnemyBullet(b) && this.player.state !== 'dead' && this.player.state !== 'spawning') {
+        if (this.player.state === 'alive') this.die();
         b.y = 9999;
       }
     }
     this.enemyBullets = this.enemyBullets.filter((b) => {
-      const w = b.rect?.w || (b.r || b.hitR || 8) * 2;
-      const h = b.rect?.h || (b.r || b.hitR || 8) * 2;
+      const half = this.enemyBulletHalfSize(b);
+      const w = b.rect?.w || half.x * 2 || 16;
+      const h = b.rect?.h || half.y * 2 || 16;
       if (this.inArcadeBounds(b.x, b.y, w, h)) {
         b.outFrames = 0;
         return true;
@@ -1407,23 +1539,23 @@ class Game {
       const reachedFullPower = this.power < 128 && result.fullPower;
       this.power = result.power;
       this.powerItemCountForScore = result.powerItemCountForScore;
-      this.score += result.score;
+      this.addScore(result.score);
       if (reachedFullPower) this.turnBulletsIntoPointItems();
       if (result.powerUp) this.audio?.sfx(SOUND.POWERUP);
       if (item.type === 'power') this.increaseSubrank(1);
     } else if (item.type === 'point') {
-      this.score += TH06_LOGIC.pointItemScore(item.y, this.difficulty);
+      this.addScore(TH06_LOGIC.pointItemScore(item.y, this.difficulty));
       this.pointItemsCollectedInStage++;
       this.increaseSubrank(item.y < 128 ? 30 : 3);
     } else if (item.type === 'pointBullet') {
-      this.score += TH06_LOGIC.pointBulletScore(this.graze, this.activeBombs.length > 0);
+      this.addScore(TH06_LOGIC.pointBulletScore(this.graze, this.activeBombs.length > 0));
     } else if (item.type === 'bomb') {
       this.bombs = clamp(this.bombs + 1, 0, 8);
       this.increaseSubrank(5);
     } else if (item.type === 'fullPower') {
       if (this.power < 128) this.turnBulletsIntoPointItems();
       this.power = 128;
-      this.score += 1000;
+      this.addScore(1000);
       this.audio?.sfx(SOUND.POWERUP);
     } else if (item.type === 'life') {
       this.lives = clamp(this.lives + 1, 0, 8);
@@ -1470,14 +1602,44 @@ class Game {
   }
   clear() {
     if (this.phase !== 'playing') return;
+    this.stageClearResult = this.buildStageClearResult();
+    this.addScore(this.stageClearResult.total);
     this.phase = 'stageClear';
-    this.track = null;
+    this.fadeOutBgm(4);
     this.setBossPresent(false);
     this.enemyBullets = [];
     for (const l of this.enemyLasers) l.inUse = false;
     this.enemyLasers = [];
     this.playerBullets = [];
     this.activeBombs = [];
+  }
+  buildStageClearResult() {
+    const stage = this.stageMeta.stageNumber;
+    const stageValue = stage * 1000;
+    const powerValue = this.power * 100;
+    const grazeValue = this.graze * 10;
+    const pointItems = this.pointItemsCollectedInStage || 0;
+    const base = (stageValue + powerValue + grazeValue) * pointItems;
+    const total = TH06_LOGIC.stageClearBonus({
+      stageNumber: stage,
+      power: this.power,
+      graze: this.graze,
+      pointItems,
+      difficulty: this.difficulty,
+      lives: this.lives,
+      bombs: this.bombs
+    });
+    return {
+      stage,
+      stageValue,
+      powerValue,
+      grazeValue,
+      pointItems,
+      base,
+      total,
+      difficulty: this.difficulty,
+      hasNextStage: this.hasNextStage()
+    };
   }
   out(e) {
     if (e.ecl) {
@@ -1603,7 +1765,7 @@ class Game {
     else if (!boss) ui.present = false;
 
     if (boss) {
-      ui.bossName = this.stageMeta.bossName;
+      ui.bossName = this.bossNameForEnemy(boss);
       ui.barActual = clamp(boss.hp / Math.max(1, boss.maxHp), 0, 1);
       if (boss.ecl) {
         ui.lives = boss.ecl.bossLifeCount ?? ui.lives;
@@ -1825,21 +1987,32 @@ class Renderer {
   stage() {
     const g = this.game;
     const fog = g.stageRuntime?.std?.fog(g.stageFrame);
+    const stageBgKey = g.stageAssets?.stageBg || 'stg1bg';
     this.rect(0, 0, 640, 480, '#050509');
     this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#090b18');
     if (g.stageRuntime) this.stageStd(g.stageRuntime.std);
     else {
-      const scroll = (g.stageFrame * 0.7) % 256;
-      for (let y = -256 + scroll; y < PLAYFIELD.height + 256; y += 256) {
-        for (let x = 0; x < PLAYFIELD.width; x += 256) {
-          this.ctx.drawImage(this.assets.stageBg, PLAYFIELD.x + x, PLAYFIELD.y + y, 256, 256);
-        }
-      }
+      this.stageTextureBase(stageBgKey, fog);
     }
     this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#05020a', fog ? 0.18 : 0.24);
     if (g.spellcardInfo?.isActive) this.spellBackground();
-    this.ctx.strokeStyle = '#ffd6e4';
-    this.ctx.strokeRect(PLAYFIELD.x - 2, PLAYFIELD.y - 2, PLAYFIELD.width + 4, PLAYFIELD.height + 4);
+  }
+  stageTextureBase(stageBgKey, fog) {
+    const img = this.assets[stageBgKey];
+    if (!img) return;
+    const ctx = this.ctx;
+    const scroll = (this.game.stageRuntime?.std?.camera(this.game.stageFrame)?.y || -this.game.stageFrame * 0.7) % 256;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.clip();
+    ctx.globalAlpha = fog ? 0.32 : 0.45;
+    for (let y = -256 - scroll; y < PLAYFIELD.height + 256; y += 256) {
+      for (let x = -64; x < PLAYFIELD.width + 256; x += 256) {
+        ctx.drawImage(img, PLAYFIELD.x + x, PLAYFIELD.y + y, 257, 257);
+      }
+    }
+    ctx.restore();
   }
   spellBackground() {
     const ctx = this.ctx;
@@ -1870,9 +2043,143 @@ class Renderer {
       return;
     }
   }
+  stageCameraBasis(facing = { x: 0, y: 0, z: 1 }) {
+    const fov = 30 * DEG;
+    const halfW = PLAYFIELD.width / 2;
+    const halfH = PLAYFIELD.height / 2;
+    const dist = halfH / Math.tan(fov / 2);
+    const eye = { x: halfW, y: -halfH, z: -dist * (facing.z ?? 1) };
+    const at = { x: halfW + (facing.x ?? 0), y: -halfH + (facing.y ?? 0), z: 0 };
+    const forward = normalize3(at.x - eye.x, at.y - eye.y, at.z - eye.z);
+    const right = normalize3(forward.z, 0, -forward.x);
+    const up = {
+      x: forward.y * right.z - forward.z * right.y,
+      y: forward.z * right.x - forward.x * right.z,
+      z: forward.x * right.y - forward.y * right.x
+    };
+    return {
+      eye,
+      right,
+      up,
+      forward,
+      xScale: (1 / Math.tan(fov / 2)) / (PLAYFIELD.width / PLAYFIELD.height),
+      yScale: 1 / Math.tan(fov / 2)
+    };
+  }
+  stageProjectPoint(x, y, z, camera) {
+    const dx = x - camera.eye.x;
+    const dy = y - camera.eye.y;
+    const dz = z - camera.eye.z;
+    const vx = dx * camera.right.x + dy * camera.right.y + dz * camera.right.z;
+    const vy = dx * camera.up.x + dy * camera.up.y + dz * camera.up.z;
+    const vz = dx * camera.forward.x + dy * camera.forward.y + dz * camera.forward.z;
+    if (vz <= 100) return null;
+    const ndcX = (vx * camera.xScale) / vz;
+    const ndcY = (vy * camera.yScale) / vz;
+    return {
+      x: PLAYFIELD.x + PLAYFIELD.width * (0.5 + ndcX * 0.5),
+      y: PLAYFIELD.y + PLAYFIELD.height * (0.5 - ndcY * 0.5),
+      z: vz
+    };
+  }
+  stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y0 = 0, y1 = h) {
+    const left = anchorTopLeft ? x : x - w / 2;
+    const top = anchorTopLeft ? y : y - h / 2;
+    const worldTop = -top - y0;
+    const worldBottom = -top - y1;
+    const tl = this.stageProjectPoint(left, worldTop, z, camera);
+    const tr = this.stageProjectPoint(left + w, worldTop, z, camera);
+    const bl = this.stageProjectPoint(left, worldBottom, z, camera);
+    const br = this.stageProjectPoint(left + w, worldBottom, z, camera);
+    if (!tl || !tr || !bl || !br) return null;
+    return { tl, tr, bl, br };
+  }
+  stageQuadBounds(corners) {
+    const xs = [corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x];
+    const ys = [corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y];
+    const x0 = Math.min(...xs);
+    const y0 = Math.min(...ys);
+    const x1 = Math.max(...xs);
+    const y1 = Math.max(...ys);
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  stageDrawTriangle(img, src, p0, p1, p2) {
+    const ctx = this.ctx;
+    const sw = Math.max(0.001, src.p1.u - src.p0.u);
+    const sh = Math.max(0.001, src.p2.v - src.p0.v);
+    const a = (p1.x - p0.x) / sw;
+    const b = (p1.y - p0.y) / sw;
+    const c = (p2.x - p0.x) / sh;
+    const d = (p2.y - p0.y) / sh;
+    const e = p0.x - a * src.p0.u - c * src.p0.v;
+    const f = p0.y - b * src.p0.u - d * src.p0.v;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.closePath();
+    ctx.clip();
+    ctx.transform(a, b, c, d, e, f);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+  }
+  stageDrawProjectedStrip(img, rect, top, bottom, sy0, sy1) {
+    const srcTop = rect.y + sy0;
+    const srcBottom = rect.y + sy1;
+    const srcLeft = rect.x;
+    const srcRight = rect.x + rect.w;
+    this.stageDrawTriangle(
+      img,
+      { p0: { u: srcLeft, v: srcTop }, p1: { u: srcRight, v: srcTop }, p2: { u: srcLeft, v: srcBottom } },
+      top.tl,
+      top.tr,
+      bottom.bl
+    );
+    this.stageDrawTriangle(
+      img,
+      { p0: { u: srcRight, v: srcTop }, p1: { u: srcRight, v: srcBottom }, p2: { u: srcLeft, v: srcBottom } },
+      top.tr,
+      bottom.br,
+      bottom.bl
+    );
+  }
+  stageDrawProjectedQuad(img, rect, x, y, z, w, h, anchorTopLeft, camera, color) {
+    const tint = (color & 0x00ffffff) !== 0x00ffffff;
+    let drawImg = img;
+    if (tint) {
+      this.tintCanvas.width = img.width;
+      this.tintCanvas.height = img.height;
+      const tctx = this.tintCtx;
+      tctx.clearRect(0, 0, img.width, img.height);
+      tctx.globalCompositeOperation = 'source-over';
+      tctx.drawImage(img, 0, 0);
+      const c = colorParts(color);
+      tctx.globalCompositeOperation = 'multiply';
+      tctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
+      tctx.fillRect(0, 0, img.width, img.height);
+      tctx.globalCompositeOperation = 'destination-in';
+      tctx.drawImage(img, 0, 0);
+      tctx.globalCompositeOperation = 'source-over';
+      drawImg = this.tintCanvas;
+    }
+    const steps = Math.max(2, Math.min(24, Math.ceil(h / 32)));
+    for (let i = 0; i < steps; i++) {
+      const y0 = h * i / steps;
+      const y1 = h * (i + 1) / steps;
+      const top = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y0, y0);
+      const bottom = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y1, y1);
+      if (!top || !bottom) continue;
+      this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * i / steps, rect.h * (i + 1) / steps);
+    }
+  }
   stageStd(std) {
     const ctx = this.ctx;
     const cam = std.camera(this.game.stageFrame);
+    const camera = this.stageCameraBasis(std.facing?.(this.game.stageFrame));
+    const stageBgKey = this.game.stageAssets?.stageBg || 'stg1bg';
+    const img = this.assets[stageBgKey];
+    if (!img) return;
     ctx.save();
     ctx.beginPath();
     ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
@@ -1884,25 +2191,20 @@ class Renderer {
         for (const q of obj.quads) {
           const rect = std.anm.scriptSprite(q.script, 0, this.game.stageFrame, { keepExitSprite: true });
           if (!rect) continue;
-          const wx = obj.x + inst.x + q.x - cam.x;
-          const wy = obj.y + inst.y + q.y - cam.y;
-          const wz = obj.z + inst.z + q.z - cam.z;
-          const p = std.project(wx, wy, wz, PLAYFIELD);
-          const rawW = q.w || rect.w * Math.abs(rect.scaleX || 1);
-          const rawH = q.h || rect.h * Math.abs(rect.scaleY || 1);
-          const w = rawW * p.scale;
-          const h = rawH * p.scale;
-          const anchorX = rect.anchorTopLeft ? 0 : w / 2;
-          const anchorY = rect.anchorTopLeft ? 0 : h / 2;
-          if (p.x + w - anchorX < PLAYFIELD.x - 32 || p.x - anchorX > PLAYFIELD.right + 32 || p.y + h - anchorY < PLAYFIELD.y - 32 || p.y - anchorY > PLAYFIELD.bottom + 32) continue;
+          const vmX = q.x + inst.x - cam.x;
+          const vmY = q.y + inst.y - cam.y;
+          const vmZ = q.z + inst.z - cam.z;
+          const rawW = Math.max(0.001, q.w || rect.w * Math.abs(rect.scaleX || 1));
+          const rawH = Math.max(0.001, q.h || rect.h * Math.abs(rect.scaleY || 1));
+          const corners = this.stageQuadCorners(vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera);
+          if (!corners) continue;
+          const bounds = this.stageQuadBounds(corners);
+          if (bounds.x + bounds.w < PLAYFIELD.x - 32 || bounds.x > PLAYFIELD.right + 32 || bounds.y + bounds.h < PLAYFIELD.y - 32 || bounds.y > PLAYFIELD.bottom + 32) continue;
           ctx.save();
           ctx.globalAlpha = (rect.alpha ?? 255) / 255;
           ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
-          ctx.translate(p.x, p.y);
-          ctx.rotate(rect.rotation || 0);
-          if (rect.flipX) ctx.scale(-1, 1);
-          if (rect.flipY) ctx.scale(1, -1);
-          ctx.drawImage(this.assets.stageBg, rect.x, rect.y, rect.w, rect.h, -anchorX, -anchorY, w, h);
+          const color = (rect.color ?? 0xffffffff) >>> 0;
+          this.stageDrawProjectedQuad(img, rect, vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, color);
           ctx.restore();
         }
       }
@@ -1961,9 +2263,13 @@ class Renderer {
     if (e.ecl) {
       const rect = this.game.stageRuntime.enemyRect(e);
       if (rect) {
-        const sheet = e.ecl.currentAnm >= 128 ? 'stg1enm2' : 'stg1enm';
+        const sheet = e.ecl.currentAnm >= 128 ? this.game.stageAssets.enemy2 : this.game.stageAssets.enemy;
         const scale = e.ecl.isBoss ? 1.08 : 1;
-        this.sheetSprite(sheet, rect.x, rect.y, rect.w, rect.h, x, y, rect.w * scale, rect.h * scale, rect.w / 2, rect.h / 2);
+        const rotation = e.ecl.anmRotateWithVelocity && (Math.abs(e.ecl.frameVx) > 0.001 || Math.abs(e.ecl.frameVy) > 0.001)
+          ? Math.atan2(e.ecl.frameVy, e.ecl.frameVx) + Math.PI / 2
+          : 0;
+        if (rotation) this.rotatedSheetSprite(sheet, rect.x, rect.y, rect.w, rect.h, x, y, rect.w * scale, rect.h * scale, rotation);
+        else this.sheetSprite(sheet, rect.x, rect.y, rect.w, rect.h, x, y, rect.w * scale, rect.h * scale, rect.w / 2, rect.h / 2);
         return;
       }
     }
@@ -2162,41 +2468,59 @@ class Renderer {
   }
   hud() {
     const g = this.game;
-    const x = 448;
-    this.rect(416, 0, 224, 480, '#0b111d', 0.96);
-    this.ctx.save();
-    this.ctx.globalAlpha = 0.22;
-    this.ctx.strokeStyle = '#263247';
-    for (let yy = 0; yy < 480; yy += 5) {
-      this.ctx.beginPath();
-      this.ctx.moveTo(416, yy);
-      this.ctx.lineTo(640, yy + 24);
-      this.ctx.stroke();
-    }
-    this.ctx.restore();
-    this.fillText('HiScore', x, 34, 13, '#fff');
-    this.fillText(String(Math.max(g.hiScore || 0, g.score || 0)).padStart(10, '0'), x + 78, 34, 13, '#fff');
-    this.fillText('Score', x, 54, 13, '#fff');
-    this.fillText(String(g.score).padStart(10, '0'), x + 78, 54, 13, '#fff');
-    this.fillText('Player', x, 96, 14, '#fff');
-    for (let i = 0; i < g.lives; i++) this.hudStar('player', x + 82 + i * 16, 101);
-    this.fillText('Bomb', x, 126, 14, '#fff');
-    for (let i = 0; i < g.bombs; i++) this.hudStar('bomb', x + 82 + i * 16, 131);
-    this.fillText('Power', x, 168, 14, '#fff');
-    if (g.power >= 128) this.fillText('MAX', x + 78, 167, 16, '#ff335f');
-    else {
-      this.rect(x + 78, 172, 96, 10, '#d9dde8', 1);
-      this.rect(x + 78, 172, 96 * g.power / 128, 10, '#ff335f');
-      this.fillText(String(g.power).padStart(3, ' '), x + 78, 188, 13, '#fff');
-    }
-    this.fillText('Graze', x, 196, 14, '#fff');
-    this.fillText(String(g.graze), x + 78, 196, 14, '#fff');
-    this.fillText('点', x, 224, 14, '#78d9ff');
-    this.fillText(String(g.pointItemsCollectedInStage || 0), x + 78, 224, 14, '#fff');
-    this.fillText(g.difficulty === 'lunatic' ? 'Lunatic' : g.difficulty, x, 286, 14, '#bdd8ff');
-    this.fillText(g.bossUi.bossName || g.stageMeta.bossName, x, 316, 14, '#dce3ff');
-    this.fillText(this.fpsText || '60.00FPS', x + 38, 448, 14, '#fff');
+    this.frontFrame();
+    this.frontLogo();
+    this.frontSprite('hiScoreLabel', 432, 58);
+    this.frontSprite('scoreLabel', 432, 82);
+    this.fillText(String(Math.max(g.hiScore || 0, g.score || 0)).padStart(9, '0'), 496, 56, 17, '#ffffff');
+    this.fillText(String(g.score).padStart(9, '0'), 496, 80, 17, '#ffffff');
+    this.frontSprite('playerLabel', 432, 122);
+    for (let i = 0; i < g.lives; i++) this.hudStar('player', 496 + i * 16, 122);
+    this.frontSprite('bombLabel', 432, 146);
+    for (let i = 0; i < g.bombs; i++) this.hudStar('bomb', 496 + i * 16, 146);
+    this.frontSprite('powerLabel', 432, 186);
+    if (g.power > 0) this.powerBar(496, 186, g.power);
+    if (g.power >= 128) this.frontSprite('maxLabel', 496, 186);
+    else this.fillText(String(g.power), 496, 184, 17, '#ffffff');
+    this.frontSprite('grazeLabel', 432, 206);
+    this.fillText(String(g.graze), 496, 204, 17, '#ffffff');
+    this.frontSprite('pointLabel', 432, 226);
+    this.fillText(String(g.pointItemsCollectedInStage || 0), 496, 224, 17, '#ffffff');
     this.bossHud();
+  }
+  frontFrame() {
+    for (let y = 0; y < 480; y += 32) {
+      this.frontSprite('panelTile', 0, y);
+      for (let x = 416; x < 640; x += 32) this.frontSprite('panelTile', x, y);
+    }
+    for (let x = PLAYFIELD.x; x < PLAYFIELD.right; x += 32) {
+      this.frontSprite('topBorder', x, 0);
+      this.frontSprite('bottomBorder', x, 464);
+    }
+  }
+  frontLogo() {
+    this.frontSprite('logoCircle', 528, 376, 0.9, true);
+    this.frontSprite('logoEast', 472, 320, 0.68, true);
+    this.frontSprite('logoTo', 528, 320, 0.68, true);
+    this.frontSprite('logoRed', 528, 376, 0.96, true);
+    this.frontSprite('logoDevil', 528, 432, 0.68, true);
+    this.frontSprite('logoTown', 584, 432, 0.68, true);
+  }
+  frontSprite(name, x, y, alpha = 1, centered = false) {
+    const s = FRONT_SPRITES[name];
+    if (!s) return;
+    this.sheetSprite('front', s.x, s.y, s.w, s.h, x, y, s.w, s.h, centered ? s.w / 2 : 0, centered ? s.h / 2 : 0, alpha);
+  }
+  powerBar(x, y, power) {
+    const width = clamp(power | 0, 0, 128);
+    const ctx = this.ctx;
+    ctx.save();
+    const grad = ctx.createLinearGradient(x, y, x + 128, y);
+    grad.addColorStop(0, 'rgba(224,224,255,0.88)');
+    grad.addColorStop(1, 'rgba(128,224,255,0.55)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, width, 16);
+    ctx.restore();
   }
   bossHud() {
     const ui = this.game.bossUi;
@@ -2215,8 +2539,7 @@ class Renderer {
     ctx.restore();
   }
   hudStar(type, x, y) {
-    const f = HUD_STARS[type] || HUD_STARS.player;
-    this.sheetSprite('front', f.x, f.y, 16, 16, x, y, 16, 16, 8, 8);
+    this.frontSprite(type === 'bomb' ? 'bombStar' : 'playerStar', x, y);
   }
   overlay() {
     const g = this.game;
@@ -2227,9 +2550,12 @@ class Renderer {
       this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', 0.52);
       this.fillText('Pause', PLAYFIELD.x + 164, PLAYFIELD.y + 200, 24);
     }
-    if (g.phase === 'stageClear' || g.phase === 'gameOver') {
+    if (g.phase === 'stageClear') {
+      this.stageClearOverlay();
+    }
+    if (g.phase === 'gameOver') {
       this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', 0.42);
-      this.fillText(g.phase === 'stageClear' ? 'Stage Clear' : 'Game Over', PLAYFIELD.x + 122, PLAYFIELD.y + 192, 26, g.phase === 'stageClear' ? '#ffe6a8' : '#ff6b84');
+      this.fillText('Game Over', PLAYFIELD.x + 122, PLAYFIELD.y + 192, 26, '#ff6b84');
     }
     if (g.banner > 0) {
       const name = g.bossUi?.spellName || '';
@@ -2245,6 +2571,41 @@ class Renderer {
       this.ctx.globalAlpha = 1;
     }
   }
+  stageClearOverlay() {
+    const g = this.game;
+    const r = g.stageClearResult || {
+      stage: g.stageMeta.stageNumber,
+      stageValue: g.stageMeta.stageNumber * 1000,
+      powerValue: g.power * 100,
+      grazeValue: g.graze * 10,
+      pointItems: g.pointItemsCollectedInStage || 0,
+      total: 0,
+      hasNextStage: g.hasNextStage?.()
+    };
+    const x = PLAYFIELD.x + 42;
+    let y = PLAYFIELD.y + 112;
+    const score = (value, width = 5) => String(Math.max(0, value | 0)).padStart(width, ' ');
+    this.ctx.save();
+    this.ctx.beginPath();
+    this.ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    this.ctx.clip();
+    this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', 0.38);
+    this.rect(PLAYFIELD.x + 28, PLAYFIELD.y + 88, PLAYFIELD.width - 56, 236, 'rgba(8,10,20,0.72)', 1, 'rgba(255,255,255,0.24)');
+    this.fillText('关卡通过', x, y, 20, '#fff37d');
+    y += 48;
+    this.fillText(`关卡 * 1000 = ${score(r.stageValue)}`, x, y, 14, '#ffffff');
+    y += 16;
+    this.fillText(`火力 *  100 = ${score(r.powerValue)}`, x, y, 14, '#c8b8ff');
+    y += 16;
+    this.fillText(`擦弹 *   10 = ${score(r.grazeValue)}`, x, y, 14, '#a0d8ff');
+    y += 16;
+    this.fillText(`    * 得点道具 ${String(r.pointItems).padStart(3, ' ')}`, x, y, 14, '#ffb8b8');
+    y += 34;
+    this.fillText(`奖励       ${score(r.total, 8)}`, x, y, 16, '#fff0a8');
+    y += 42;
+    this.fillText(r.hasNextStage ? '进入下一关' : '演示结束', PLAYFIELD.x + PLAYFIELD.width / 2, y, 15, '#dce3ff', 'center');
+    this.ctx.restore();
+  }
   stageIntroOverlay() {
     const g = this.game;
     if (g.phase !== 'playing' || g.stageIntro <= 0) return;
@@ -2252,18 +2613,44 @@ class Renderer {
     const title = g.stageMeta.title || {};
     const total = g.stageIntroTotalFrames();
     const elapsed = total - g.stageIntro;
-    const primary = title.primary || `STAGE ${g.stageMeta.stageNumber}`;
+    const primary = title.primary || `第${g.stageMeta.stageNumber}关`;
+    const original = title.original || `STAGE ${g.stageMeta.stageNumber}`;
     const japanese = title.japanese || '';
     const english = title.english || '';
     const fadeIn = Math.min(1, elapsed / 40);
     const fadeOut = Math.min(1, g.stageIntro / 50);
     const alpha = Math.min(fadeIn, fadeOut);
     const centerX = PLAYFIELD.x + PLAYFIELD.width / 2;
+    const centerY = PLAYFIELD.y + 154;
+    const sweep = (elapsed % 180) / 180;
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 7; i++) {
+      const yy = centerY - 50 + i * 16 + Math.sin((elapsed + i * 9) * 0.07) * 3;
+      const left = PLAYFIELD.x + ((sweep * 520 + i * 37) % 520) - 120;
+      const grad = ctx.createLinearGradient(left, yy, left + 160, yy);
+      grad.addColorStop(0, 'rgba(128,240,255,0)');
+      grad.addColorStop(0.5, 'rgba(196,255,255,0.32)');
+      grad.addColorStop(1, 'rgba(128,240,255,0)');
+      ctx.globalAlpha = alpha * 0.7;
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(left, yy);
+      ctx.lineTo(left + 160, yy);
+      ctx.stroke();
+    }
     ctx.globalAlpha = alpha;
-    this.fillText(primary, centerX, PLAYFIELD.y + 126, 24, '#ffffff', 'center');
-    if (japanese) this.fillText(japanese, centerX, PLAYFIELD.y + 158, 20, '#ffd7df', 'center');
-    if (english) this.fillText(english, centerX, PLAYFIELD.y + 184, 16, '#cfe7ff', 'center');
+    ctx.globalCompositeOperation = 'source-over';
+    this.rect(PLAYFIELD.x + 42, centerY - 52, PLAYFIELD.width - 84, 1, '#dffcff', 0.55);
+    this.rect(PLAYFIELD.x + 42, centerY + 58, PLAYFIELD.width - 84, 1, '#dffcff', 0.35);
+    this.fillText(original, centerX, centerY - 30, 14, '#bff8ff', 'center');
+    this.fillText(primary, centerX, centerY, 25, '#ffffff', 'center');
+    if (japanese) this.fillText(japanese, centerX, centerY + 30, 19, '#ffd7df', 'center');
+    if (english) this.fillText(english, centerX, centerY + 54, 15, '#cfe7ff', 'center');
     ctx.restore();
   }
   itemGetBorderLine() {
@@ -2321,7 +2708,7 @@ class Renderer {
   dialoguePortrait(side, script, x, y, flip) {
     const family = this.game.spec().family;
     const playerFaces = family === 'marisa' ? ['face01a', 'face01a', 'face01b', 'face01b', 'face01c', 'face01c'] : ['face00a', 'face00a', 'face00b', 'face00b', 'face00c', 'face00c'];
-    const bossFaces = ['face03a', 'face03a', 'face03b', 'face03b'];
+    const bossFaces = this.game.stageMeta.bossFaces || ['face03a', 'face03a', 'face03b', 'face03b'];
     const key = side === 0 ? playerFaces[script] || playerFaces[0] : bossFaces[script] || bossFaces[0];
     const sx = script % 2 ? 128 : 0;
     const ctx = this.ctx;

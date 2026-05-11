@@ -4,7 +4,8 @@
   if (!TH06_LOGIC) throw new Error('TH06Logic source tables must be loaded before th06-runtime.js');
   const TAU = Math.PI * 2;
   const DEG = Math.PI / 180;
-  const ACTIVE_ECL_DIFFICULTY = 3; // Lunatic first: reproduce the densest Stage 1 script path.
+  const ACTIVE_ECL_DIFFICULTY = 3; // Lunatic first: reproduce the densest original script path.
+  const ENEMY_BULLET_CAP = TH06_LOGIC.ENEMY_BULLET_CAP ?? 640;
   const ITEM_TABLE = ['power', 'point', 'bigPower', 'bomb', 'fullPower', 'life', 'point'];
   const RANDOM_ITEMS = [
     'power', 'power', 'point', 'power', 'point', 'power', 'power', 'point',
@@ -433,13 +434,26 @@
         css: `rgb(${prev.r}, ${prev.g}, ${prev.b})`
       };
     }
+    facing(frame) {
+      let prev = this.facingKeys[0];
+      for (const key of this.facingKeys) {
+        if (key.frame >= 0 && key.frame <= frame) prev = key;
+        else if (key.frame > frame) break;
+      }
+      return prev || { x: 0, y: 0, z: 1 };
+    }
     project(x, y, z, playfield) {
       const fov = 30 * DEG;
-      const dist = (playfield.height / 2) / Math.tan(fov / 2);
-      const viewZ = Math.max(24, z + dist);
+      const halfW = playfield.width / 2;
+      const halfH = playfield.height / 2;
+      const dist = halfH / Math.tan(fov / 2);
+      const viewZ = z + dist;
+      if (viewZ <= 100) return null;
       const aspect = playfield.width / playfield.height;
-      const nx = ((x - playfield.width / 2) / (viewZ * Math.tan(fov / 2) * aspect));
-      const ny = ((playfield.height / 2 - y) / (viewZ * Math.tan(fov / 2)));
+      const yScale = 1 / Math.tan(fov / 2);
+      const xScale = yScale / aspect;
+      const nx = ((x - halfW) * xScale) / viewZ;
+      const ny = ((-y + halfH) * yScale) / viewZ;
       return {
         x: playfield.x + playfield.width * (0.5 + nx * 0.5),
         y: playfield.y + playfield.height * (0.5 - ny * 0.5),
@@ -653,6 +667,8 @@
         anmExRight: -1,
         anmExFlags: 0xff,
         frameVx: 0,
+        frameVy: 0,
+        anmRotateWithVelocity: false,
         bossLifeCount: 0,
         lasers: [],
         laserStore: 0,
@@ -695,8 +711,10 @@
     }
     updateEnemy(game, e) {
       const prevX = e.x;
+      const prevY = e.y;
       this.applyMovement(e);
       e.ecl.frameVx = e.x - prevX;
+      e.ecl.frameVy = e.y - prevY;
       this.checkCallbacks(game, e);
       this.runEcl(game, e);
       this.updateAutoShoot(game, e);
@@ -1014,6 +1032,9 @@
         game.spawnEffectParticles?.(v.i32(a), e.x, e.y, v.i32(a + 4), v.u32(a + 8));
       }
       else if (op === 119) this.dropPowerItems(game, e, v.i32(a));
+      else if (op === 120) s.anmRotateWithVelocity = !!v.i32(a);
+      else if (op === 121) this.runExInstruction(game, e, v.i32(a), v.i32(a + 4));
+      else if (op === 123) ctx.time += this.getInt(e, a);
       else if (op === 124) {
         const type = ITEM_TABLE[v.i32(a)];
         if (type) this.spawnSourceItem(game, type, e.x, e.y);
@@ -1129,16 +1150,17 @@
         sfx: e.ecl.bulletSfx,
         exInts: [...e.ecl.bulletExInts],
         exFloats: [...e.ecl.bulletExFloats],
-        aimMode: op - 67,
-        x: e.x + e.ecl.shootOffset.x,
-        y: e.y + e.ecl.shootOffset.y
+        aimMode: op - 67
       };
     }
-    spawnBullets(game, e, p) {
-      const aim = Math.atan2(game.player.y - p.y, game.player.x - p.x);
+    spawnBullets(game, e, p, origin = null) {
+      const shootX = origin?.x ?? e.x + e.ecl.shootOffset.x;
+      const shootY = origin?.y ?? e.y + e.ecl.shootOffset.y;
+      const aim = Math.atan2(game.player.y - shootY, game.player.x - shootX);
       for (let j = 0; j < p.count2; j++) {
         const speed = p.speed1 - (p.speed1 - p.speed2) * j / p.count2;
         for (let i = 0; i < p.count1; i++) {
+          if ((game.enemyBullets?.length || 0) >= ENEMY_BULLET_CAP) return;
           let angle = 0;
           if (p.aimMode <= 1) {
             angle = ((p.count1 & 1) ? Math.floor((i + 1) / 2) : Math.floor(i / 2) + 0.5) * p.angle2;
@@ -1166,8 +1188,8 @@
           const flags = p.flags || 0;
           game.enemyBullets.push({
             id: game.id++,
-            x: p.x,
-            y: p.y,
+            x: shootX,
+            y: shootY,
             vx: Math.cos(angle) * spd,
             vy: Math.sin(angle) * spd,
             speed: spd,
@@ -1193,6 +1215,39 @@
         }
       }
       if (p.flags & 0x200) game.audio?.sfx(p.sfx);
+    }
+    runExInstruction(game, e, index, param) {
+      if (index === 0) {
+        game.spawnEffectParticles?.(12, e.x, e.y, 1, 0xffffffff);
+        for (const bullet of game.enemyBullets || []) {
+          const rect = this.bulletRect(bullet.eclSprite ?? 0, 15);
+          if (rect) {
+            bullet.eclOffset = 15;
+            bullet.rect = rect;
+            bullet.r = Math.max(rect.w, rect.h) / 2;
+            const grazeSize = TH06_LOGIC.bulletGrazeSize(bullet.eclSprite ?? 0, rect.h);
+            bullet.grazeSize = grazeSize;
+            bullet.hitR = Math.max(grazeSize.x, grazeSize.y) / 2;
+          }
+          if (param === 0) {
+            bullet.vx = 0;
+            bullet.vy = 0;
+            bullet.speed = 0;
+          } else if (param === 1) {
+            bullet.flags = (bullet.flags || 0) | 0x10;
+            bullet.exInts = [220, ...(bullet.exInts || []).slice(1)];
+            bullet.exFloats = [0.01, game.rng.range(TAU) - Math.PI, -1, -1];
+            bullet.age = 0;
+          }
+        }
+      } else if (index === 1 && e.ecl.bulletProps) {
+        const range = Math.max(0, param | 0);
+        const origin = {
+          x: e.x + game.rng.range(range) - range / 2,
+          y: e.y + game.rng.range(range * 0.75) - range * 0.375
+        };
+        this.spawnBullets(game, e, e.ecl.bulletProps, origin);
+      }
     }
     spawnLaser(game, e, op, a) {
       const x = e.x + e.ecl.shootOffset.x;
@@ -1263,7 +1318,8 @@
         s.deathCallbackSub = -1;
         return true;
       }
-      game.score += e.score || 0;
+      if (game.addScore) game.addScore(e.score || 0);
+      else game.score += e.score || 0;
       game.spawnEnemyDeathEffect?.(e, s);
       const drops = this.dropTypes(s.itemDrop);
       for (const drop of drops) {
@@ -1333,7 +1389,7 @@
     }
     enemyRect(e) {
       const script = e.ecl?.currentAnm ?? 0;
-      return (script >= 128 ? this.enemy2Anm : this.enemyAnm).scriptSprite(script, 0, e.ecl?.anmFrame || e.frame || 0);
+      return (script >= 128 ? this.enemy2Anm : this.enemyAnm).scriptSprite(script, 0, e.ecl?.anmFrame || e.frame || 0, { keepExitSprite: true });
     }
     effectSpec(effectId) {
       const id = clamp(effectId | 0, 0, EFFECT_SCRIPT_TABLE.length - 1);
