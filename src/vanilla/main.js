@@ -186,8 +186,17 @@ class Rng {
     this.seed = ((((a & 0xc000) >> 14) + a * 4) & 0xffff) >>> 0;
     return this.seed;
   }
+  u32() {
+    return (((this.u16() << 16) | this.u16()) >>> 0);
+  }
+  u16InRange(range) {
+    return range ? this.u16() % range : 0;
+  }
+  u32InRange(range) {
+    return range ? this.u32() % range : 0;
+  }
   f() {
-    return (((this.u16() << 16) | this.u16()) >>> 0) / 0xffffffff;
+    return this.u32() / 0xffffffff;
   }
   range(v) {
     return this.f() * v;
@@ -1368,8 +1377,7 @@ class Game {
   updateEnemyBullets() {
     for (const b of this.enemyBullets) {
       this.updateEnemyBulletMotion(b);
-      b.x += b.vx;
-      b.y += b.vy;
+      if (b.collisionActive === false) continue;
       const playerCanGraze = this.player.state === 'alive' || this.player.state === 'invuln';
       if (!b.grazed && this.playerOverlapsEnemyBullet(b, PLAYER_GRAZE_PADDING) && playerCanGraze) {
         b.grazed = true;
@@ -1490,11 +1498,35 @@ class Game {
     }
   }
   updateEnemyBulletMotion(b) {
-    if (!b.flags) return;
-    b.age = (b.age || 0) + 1;
-    if (b.flags & 0x10) {
+    const move = (scale = 1) => {
+      b.x += b.vx * scale;
+      b.y += b.vy * scale;
+    };
+    if (b.spawnState > 1) {
+      move(b.spawnMoveScale || 1);
+      b.spawnAge = (b.spawnAge || 0) + 1;
+      if (b.spawnAge < (b.spawnDuration || 1)) {
+        b.collisionActive = false;
+        return;
+      }
+      b.spawnState = 1;
+      b.age = 0;
+    }
+    b.collisionActive = true;
+    const age = b.age || 0;
+    if (b.flags & 1) {
+      if (age <= 16) {
+        const extraSpeed = 5 - age * 5 / 16;
+        b.vx = Math.cos(b.angle) * ((b.speed || 0) + extraSpeed);
+        b.vy = Math.sin(b.angle) * ((b.speed || 0) + extraSpeed);
+      } else {
+        b.flags ^= 1;
+        b.vx = Math.cos(b.angle) * (b.speed || 0);
+        b.vy = Math.sin(b.angle) * (b.speed || 0);
+      }
+    } else if (b.flags & 0x10) {
       const limit = b.exInts?.[0] > 0 ? b.exInts[0] : 99999;
-      if (b.age >= limit) b.flags &= ~0x10;
+      if (age >= limit) b.flags &= ~0x10;
       else {
         const angle = (b.exFloats?.[1] ?? -1000) <= -999 ? b.angle : b.exFloats[1];
         const accel = b.exFloats?.[0] || 0;
@@ -1505,7 +1537,7 @@ class Game {
       }
     } else if (b.flags & 0x20) {
       const limit = b.exInts?.[0] || 0;
-      if (b.age >= limit) b.flags &= ~0x20;
+      if (age >= limit) b.flags &= ~0x20;
       else {
         b.angle = normalizeLocalAngle(b.angle + (b.exFloats?.[1] || 0));
         b.speed += b.exFloats?.[0] || 0;
@@ -1518,6 +1550,8 @@ class Game {
     else if (b.flags & 0x80) this.dirChangeBullet(b, 'aimed');
     else if (b.flags & 0x400) this.bounceBullet(b, true);
     else if (b.flags & 0x800) this.bounceBullet(b, false);
+    move(1);
+    b.age = age + 1;
   }
   dirChangeBullet(b, mode) {
     const next = b.dirInterval * (b.dirTimes + 1);
@@ -2971,6 +3005,12 @@ async function main() {
         sprite: b.eclSprite,
         offset: b.eclOffset,
         flags: b.flags || 0,
+        age: b.age || 0,
+        spawnState: b.spawnState || 1,
+        spawnAge: b.spawnAge || 0,
+        spawnDuration: b.spawnDuration || 0,
+        spawnMoveScale: round(b.spawnMoveScale || 1),
+        collisionActive: b.collisionActive !== false,
         hitR: round(b.hitR),
         grazeSize: b.grazeSize ? { x: round(b.grazeSize.x), y: round(b.grazeSize.y) } : null
       })),

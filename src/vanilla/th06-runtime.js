@@ -28,6 +28,18 @@
     22, 18, 26, 24, 32, 32, 32, 32, 32, 32,
     32, 32, 44, 3600, 3600, 3600, 3600, 64, 244, 124
   ];
+  const BULLET_SPAWN_EFFECTS = [
+    { fast: 14, normal: 15, slow: 16, imageKey: 'etama3' },
+    { fast: 17, normal: 18, slow: 19, imageKey: 'etama3' },
+    { fast: 17, normal: 18, slow: 19, imageKey: 'etama3' },
+    { fast: 17, normal: 18, slow: 19, imageKey: 'etama3' },
+    { fast: 17, normal: 18, slow: 19, imageKey: 'etama3' },
+    { fast: 17, normal: 18, slow: 19, imageKey: 'etama3' },
+    { fast: 20, normal: 20, slow: 20, imageKey: 'etama3' },
+    { fast: 20, normal: 20, slow: 20, imageKey: 'etama3' },
+    { fast: 20, normal: 20, slow: 20, imageKey: 'etama3' },
+    { fast: 2, normal: 2, slow: 2, imageKey: 'etama4' }
+  ];
 
   function clamp(v, min, max) {
     return Math.min(max, Math.max(min, v));
@@ -39,6 +51,22 @@
     while (v < -Math.PI) v += TAU;
     while (v > Math.PI) v -= TAU;
     return v;
+  }
+
+  function rngU16InRange(rng, range) {
+    const span = Math.max(0, range | 0);
+    if (!span) return 0;
+    if (typeof rng.u16InRange === 'function') return rng.u16InRange(span);
+    if (typeof rng.u16 === 'function') return rng.u16() % span;
+    return Math.trunc(rng.range(span));
+  }
+
+  function rngU32InRange(rng, range) {
+    const span = Math.max(0, range | 0);
+    if (!span) return 0;
+    if (typeof rng.u32InRange === 'function') return rng.u32InRange(span);
+    if (typeof rng.u32 === 'function') return rng.u32() % span;
+    return Math.trunc(rng.range(span));
   }
 
   function bytesFromBase64(b64) {
@@ -303,6 +331,32 @@
     }
     scriptSprite(scriptId, offset = 0, frame = 0, options = {}) {
       return this.scriptFrame(scriptId, offset, frame, options);
+    }
+    scriptDuration(scriptId) {
+      let off = this.scripts.get(scriptId);
+      if (off == null) return 0;
+      const scriptStart = off;
+      let lastTime = 0;
+      const seen = new Set();
+      for (let guard = 0; guard < 220 && off + 4 < this.view.bytes.length; guard++) {
+        if (seen.has(off)) break;
+        seen.add(off);
+        const time = this.view.i16(off);
+        const op = this.view.u8(off + 2);
+        const argsCount = this.view.u8(off + 3);
+        lastTime = Math.max(lastTime, time);
+        if (op === 0 || op === 15 || op === 21 || op === 24) return Math.max(0, time);
+        if (op === 5) {
+          const jumpOff = scriptStart + this.view.i32(off + 4);
+          if (jumpOff > off) {
+            off = jumpOff;
+            continue;
+          }
+          break;
+        }
+        off += 4 + argsCount;
+      }
+      return Math.max(0, lastTime);
     }
     interruptOffset(scriptId, interrupt) {
       const label = this.interruptLabel(scriptId, interrupt);
@@ -858,7 +912,7 @@
       else if (op === 6 || op === 7) {
         const base = this.getInt(e, a + 4);
         const span = Math.max(1, this.getInt(e, a + 8));
-        this.setInt(e, v.i32(a), Math.floor(game.rng.range(span)) + (op === 7 ? base : 0));
+        this.setInt(e, v.i32(a), rngU32InRange(game.rng, span) + (op === 7 ? base : 0));
       } else if (op === 8 || op === 9) {
         const span = this.getFloat(e, a + 4);
         const base = this.getFloat(e, a + 8);
@@ -928,7 +982,7 @@
       } else if (op === 76 || op === 77) {
         s.shootIntervalBase = v.i32(a);
         s.shootInterval = TH06_LOGIC.shootIntervalForRank(s.shootIntervalBase, game.rank);
-        s.shootTimer = op === 77 && s.shootInterval > 0 ? Math.floor(game.rng.range(s.shootInterval)) : 0;
+        s.shootTimer = op === 77 && s.shootInterval > 0 ? rngU32InRange(game.rng, s.shootInterval) : 0;
       } else if (op === 78) s.shootDisabled = true;
       else if (op === 79) s.shootDisabled = false;
       else if (op === 80 && s.bulletProps) this.spawnBullets(game, e, s.bulletProps);
@@ -1211,6 +1265,7 @@
           const visual = Math.max(rect.w, rect.h);
           const grazeSize = TH06_LOGIC.bulletGrazeSize(p.sprite, rect.h);
           const flags = p.flags || 0;
+          const spawnEffect = this.bulletSpawnEffect(p.sprite, flags);
           game.enemyBullets.push({
             id: game.id++,
             x: shootX,
@@ -1231,6 +1286,12 @@
             dirInterval: Math.max(1, p.exInts?.[0] || 1),
             dirMax: Math.max(1, p.exInts?.[1] || 1),
             dirTimes: 0,
+            spawnState: spawnEffect.state,
+            spawnAge: 0,
+            spawnDuration: spawnEffect.duration,
+            spawnMoveScale: spawnEffect.moveScale,
+            spawnEffectScript: spawnEffect.script,
+            spawnEffectImageKey: spawnEffect.imageKey,
             grazed: false,
             eclSprite: p.sprite,
             eclOffset: p.offset,
@@ -1333,7 +1394,7 @@
           let changed = ACTIVE_ECL_DIFFICULTY <= 1 ? 14 : 52;
           for (const bullet of game.enemyBullets || []) {
             if (changed <= 0) break;
-            if (!this.bulletIsLarge(bullet) || bullet.eclOffset === 5 || Math.trunc(game.rng.range(4)) !== 0) continue;
+            if (!this.bulletIsLarge(bullet) || bullet.eclOffset === 5 || rngU16InRange(game.rng, 4) !== 0) continue;
             this.setBulletOffset(bullet, 5);
             const dist = Math.hypot(bullet.x - game.player.x, bullet.y - game.player.y);
             const angle = dist > 128
@@ -1348,7 +1409,7 @@
         e.ecl.exFunc6Angle = normalizeAngle((e.ecl.exFunc6Angle || 0) + DEG);
         const t = e.ecl.exFunc6Timer++;
         if (!repeated || t > 120 || (t > 60 && t % 2 === 0) || (t > 30 && t % 4 === 0) || t % 8 === 0) {
-          const seed = Math.trunc(game.rng.range(Math.max(1, (t % 16) / 2))) + Math.trunc((t % 16) / 2);
+          const seed = rngU16InRange(game.rng, Math.trunc((t % 16) / 2)) + Math.trunc((t % 16) / 2);
           const distance = seed * 10 + 32;
           const angle = normalizeAngle(e.ecl.exFunc6Angle - seed * Math.PI / 40);
           for (const side of [-1, 1]) {
@@ -1566,6 +1627,35 @@
       }
       const rect = this.bulletAnm.scriptSprite(sprite, offset, 0, { keepExitSprite: true });
       return rect ? { ...rect, imageKey: 'etama3' } : null;
+    }
+    bulletSpawnEffect(sprite, flags) {
+      let kind = null;
+      let state = 1;
+      let moveScale = 1;
+      if (flags & 2) {
+        kind = 'fast';
+        state = 2;
+        moveScale = 1 / 2;
+      } else if (flags & 4) {
+        kind = 'normal';
+        state = 3;
+        moveScale = 1 / 2.5;
+      } else if (flags & 8) {
+        kind = 'slow';
+        state = 4;
+        moveScale = 1 / 3;
+      }
+      if (!kind) return { state, duration: 0, moveScale, script: -1, imageKey: null };
+      const spec = BULLET_SPAWN_EFFECTS[clamp(sprite | 0, 0, BULLET_SPAWN_EFFECTS.length - 1)];
+      const anm = spec.imageKey === 'etama4' ? this.effectParticleAnm : this.bulletAnm;
+      const script = spec[kind];
+      return {
+        state,
+        duration: Math.max(1, anm.scriptDuration(script)),
+        moveScale,
+        script,
+        imageKey: spec.imageKey
+      };
     }
     enemyRect(e) {
       const script = e.ecl?.currentAnm ?? 0;
