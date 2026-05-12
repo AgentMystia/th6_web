@@ -4,7 +4,6 @@ reference/
 .codex
 assets/audio/*.mid
 
-README.md
 docs/
 scripts/
 tests/
