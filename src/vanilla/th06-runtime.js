@@ -547,13 +547,15 @@
       this.ecl = new Th06Ecl(stageData.ecl);
       this.std = new Th06Std(stageData.std, stageData.stageAnm);
       this.enemyAnm = new Th06Anm(stageData.enemyAnm);
-      this.enemy2Anm = new Th06Anm(stageData.enemy2Anm);
+      this.enemy2Anm = stageData.enemy2Anm ? new Th06Anm(stageData.enemy2Anm) : this.enemyAnm;
       this.bulletAnm = new Th06Anm(stageData.bulletAnm);
       this.playerAnm = [new Th06Anm(stageData.player0Anm), new Th06Anm(stageData.player1Anm)];
       const effectData = TH06_GLOBAL.TH06_EFFECT_DATA;
       if (!effectData?.etama4Anm || !effectData?.eff01Anm) throw new Error('Original effect ANM data is missing');
+      const stageEffectKey = stageData.assets?.effectKey || 'eff01Anm';
       this.effectParticleAnm = new Th06Anm(effectData.etama4Anm);
-      this.effectStageAnm = new Th06Anm(effectData.eff01Anm);
+      this.effectStageAnm = new Th06Anm(effectData[stageEffectKey] || effectData.eff01Anm);
+      this.effectStageImageKey = stageData.assets?.effectImageKey || 'eff01';
       this.msg = stageData.msg ? new Th06Msg(stageData.msg) : null;
       this.randomItemIndex = 0;
       this.randomSpawnIndex = 0;
@@ -663,6 +665,8 @@
         bossTimer: 0,
         currentAnm: 0,
         anmFrame: 0,
+        anmSlots: [],
+        anmInterrupt: null,
         anmExDefaults: -1,
         anmExFarLeft: -1,
         anmExFarRight: -1,
@@ -680,6 +684,11 @@
         disableCallStack: false,
         invisible: false,
         spellTimeoutFlag: false,
+        exRepeatIndex: -1,
+        exRepeatParam: 0,
+        exFunc6Angle: 0,
+        exFunc6Timer: 0,
+        exFunc10Timer: 0,
         bulletRankSpeedLow: -0.5,
         bulletRankSpeedHigh: 0.5,
         bulletRankAmount1Low: 0,
@@ -719,6 +728,7 @@
       e.ecl.frameVx = e.x - prevX;
       e.ecl.frameVy = e.y - prevY;
       this.checkCallbacks(game, e);
+      if (e.ecl.exRepeatIndex >= 0) this.runExInstruction(game, e, e.ecl.exRepeatIndex, e.ecl.exRepeatParam, true);
       this.runEcl(game, e);
       this.updateAutoShoot(game, e);
       if (e.ecl.isBoss) e.ecl.bossTimer++;
@@ -991,6 +1001,11 @@
         const currentAnm = v.i32(a);
         this.setCurrentAnm(e, currentAnm);
       }
+      else if (op === 99) {
+        const slot = Math.max(0, v.i32(a) | 0);
+        const script = v.i32(a + 4);
+        s.anmSlots[slot] = { script, frame: 0 };
+      }
       else if (op === 98) {
         s.anmExDefaults = v.i16(a);
         s.anmExFarLeft = v.i16(a + 2);
@@ -1037,15 +1052,22 @@
       else if (op === 119) this.dropPowerItems(game, e, v.i32(a));
       else if (op === 120) s.anmRotateWithVelocity = !!v.i32(a);
       else if (op === 121) this.runExInstruction(game, e, v.i32(a), v.i32(a + 4));
+      else if (op === 122) {
+        s.exRepeatIndex = v.i32(a);
+        s.exRepeatParam = s.exRepeatIndex >= 0 ? v.i32(a + 4) : 0;
+      }
       else if (op === 123) ctx.time += this.getInt(e, a);
       else if (op === 124) {
         const type = ITEM_TABLE[v.i32(a)];
         if (type) this.spawnSourceItem(game, type, e.x, e.y);
       }
+      else if (op === 125 || op === 127) {}
       else if (op === 126) {
         s.bossLifeCount = v.i32(a);
         game.setBossLifeCount?.(s.bossLifeCount);
       }
+      else if (op === 128) s.anmInterrupt = { slot: -1, value: v.i32(a), frame: 0 };
+      else if (op === 129) s.anmInterrupt = { slot: v.i32(a), value: v.i32(a + 4), frame: 0 };
       else if (op === 131) {
         s.bulletRankSpeedLow = v.f32(a);
         s.bulletRankSpeedHigh = v.f32(a + 4);
@@ -1219,7 +1241,61 @@
       }
       if (p.flags & 0x200) game.audio?.sfx(p.sfx);
     }
+    bulletIsLarge(b) {
+      return (b.rect?.h ?? 0) >= 30;
+    }
+    setBulletOffset(b, offset) {
+      const rect = this.bulletRect(b.eclSprite ?? 0, offset);
+      if (!rect) return false;
+      b.eclOffset = offset;
+      b.rect = rect;
+      b.r = Math.max(rect.w, rect.h) / 2;
+      const grazeSize = TH06_LOGIC.bulletGrazeSize(b.eclSprite ?? 0, rect.h);
+      b.grazeSize = grazeSize;
+      b.hitR = Math.max(grazeSize.x, grazeSize.y) / 2;
+      return true;
+    }
+    setBulletVelocity(b, angle, speed = b.speed || 0) {
+      b.angle = normalizeAngle(angle);
+      b.speed = speed;
+      b.vx = Math.cos(b.angle) * speed;
+      b.vy = Math.sin(b.angle) * speed;
+    }
+    spawnLaserPattern(game, e, position, angle, options = {}) {
+      const laser = {
+        id: game.id++,
+        ownerId: e.id,
+        inUse: true,
+        sprite: options.sprite ?? 1,
+        color: options.color ?? 8,
+        x: position.x,
+        y: position.y,
+        angle: normalizeAngle(angle),
+        speed: options.speed ?? 0,
+        startOffset: options.startOffset ?? 0,
+        endOffset: options.endOffset ?? 440,
+        startLength: options.startLength ?? 440,
+        width: options.width ?? 20,
+        startTime: options.startTime ?? 60,
+        duration: options.duration ?? 90,
+        despawnDuration: options.despawnDuration ?? 16,
+        hitboxStartTime: options.hitboxStartTime ?? 50,
+        hitboxEndDelay: options.hitboxEndDelay ?? 16,
+        flags: options.flags ?? 2,
+        state: 0,
+        timer: 0,
+        visualWidth: 1.2,
+        hitboxLength: 0
+      };
+      e.ecl.lasers.push(laser);
+      game.enemyLasers.push(laser);
+    }
+    spawnStoredPatternAt(game, e, x, y, overrides = {}) {
+      if (!e.ecl.bulletProps) return;
+      this.spawnBullets(game, e, { ...e.ecl.bulletProps, ...overrides }, { x, y });
+    }
     runExInstruction(game, e, index, param) {
+      const repeated = arguments[4] === true;
       if (index === 0) {
         game.spawnEffectParticles?.(12, e.x, e.y, 1, 0xffffffff);
         for (const bullet of game.enemyBullets || []) {
@@ -1250,6 +1326,106 @@
           y: e.y + game.rng.range(range * 0.75) - range * 0.375
         };
         this.spawnBullets(game, e, e.ecl.bulletProps, origin);
+      } else if (index === 4) {
+        if ((param | 0) < 2) {
+          game.spawnEffectParticles?.(12, e.x, e.y, 1, 0xffffffff);
+        } else {
+          let changed = ACTIVE_ECL_DIFFICULTY <= 1 ? 14 : 52;
+          for (const bullet of game.enemyBullets || []) {
+            if (changed <= 0) break;
+            if (!this.bulletIsLarge(bullet) || bullet.eclOffset === 5 || Math.trunc(game.rng.range(4)) !== 0) continue;
+            this.setBulletOffset(bullet, 5);
+            const dist = Math.hypot(bullet.x - game.player.x, bullet.y - game.player.y);
+            const angle = dist > 128
+              ? (ACTIVE_ECL_DIFFICULTY <= 1 ? game.rng.range(Math.PI * 0.75) + Math.PI / 4 : game.rng.range(TAU) - Math.PI)
+              : Math.atan2(bullet.y - game.player.y, bullet.x - game.player.x) + Math.PI / 2 + game.rng.range(TAU) - Math.PI;
+            this.setBulletVelocity(bullet, angle, bullet.speed || 1);
+            changed--;
+          }
+        }
+        e.ecl.ctx.var2 = 0;
+      } else if (index === 6 || index === 10) {
+        e.ecl.exFunc6Angle = normalizeAngle((e.ecl.exFunc6Angle || 0) + DEG);
+        const t = e.ecl.exFunc6Timer++;
+        if (!repeated || t > 120 || (t > 60 && t % 2 === 0) || (t > 30 && t % 4 === 0) || t % 8 === 0) {
+          const seed = Math.trunc(game.rng.range(Math.max(1, (t % 16) / 2))) + Math.trunc((t % 16) / 2);
+          const distance = seed * 10 + 32;
+          const angle = normalizeAngle(e.ecl.exFunc6Angle - seed * Math.PI / 40);
+          for (const side of [-1, 1]) {
+            game.spawnEffectParticles?.(19, e.x + Math.cos(angle) * distance * side, e.y + Math.sin(angle) * distance, 1, 0xff2020ff);
+          }
+        }
+      } else if (index === 7) {
+        const randomAngle = game.rng.range(TAU) - Math.PI;
+        for (let ring = 0; ring < 2; ring++) {
+          let laserAngle = (ring === 0 ? -Math.PI : -Math.PI * 7 / 8) + randomAngle;
+          const angleDiff = ring === 0 ? Math.PI / 4 : -Math.PI / 4;
+          const bases = [];
+          for (let i = 0; i < 8; i++, laserAngle += Math.PI / 4) {
+            bases.push({ x: e.x + Math.cos(laserAngle) * 32, y: e.y + Math.sin(laserAngle) * 32 });
+          }
+          laserAngle = (ring === 0 ? -Math.PI : -Math.PI * 7 / 8) + randomAngle;
+          for (let pass = 0; pass < 3; pass++) {
+            const length = pass < 2 ? 112 : 480;
+            for (let i = 0; i < 8; i++) {
+              const pos = bases[i];
+              if ((param | 0) === 0) {
+                this.spawnLaserPattern(game, e, pos, laserAngle, {
+                  color: ACTIVE_ECL_DIFFICULTY <= 1 ? 2 : 8,
+                  endOffset: ACTIVE_ECL_DIFFICULTY <= 1 ? length : 440,
+                  startLength: ACTIVE_ECL_DIFFICULTY <= 1 ? length : 440,
+                  width: ACTIVE_ECL_DIFFICULTY <= 1 ? 28 : 20,
+                  startTime: pass * 16 + 60,
+                  duration: 90 - pass * 16
+                });
+              } else {
+                this.spawnStoredPatternAt(game, e, pos.x, pos.y);
+              }
+              pos.x += Math.cos(laserAngle) * length;
+              pos.y += Math.sin(laserAngle) * length;
+              laserAngle += Math.PI / 4;
+            }
+            laserAngle += angleDiff - TAU;
+          }
+        }
+      } else if (index === 8) {
+        let changed = 0;
+        const large = [...(game.enemyBullets || [])].filter((bullet) => this.bulletIsLarge(bullet));
+        for (const bullet of large) {
+          this.spawnStoredPatternAt(game, e, bullet.x, bullet.y, {
+            sprite: 3,
+            offset: 1,
+            count1: 1,
+            count2: 1,
+            speed1: 0,
+            speed2: 0,
+            angle1: game.rng.range(TAU) - Math.PI,
+            angle2: 0,
+            flags: 8,
+            aimMode: 1
+          });
+          changed++;
+        }
+        e.ecl.ctx.var3 = changed;
+      } else if (index === 9 || index === 11) {
+        const randomAngle = game.rng.range(TAU) - Math.PI;
+        game.spawnEffectParticles?.(12, e.x, e.y, 1, 0xffffffff);
+        for (const bullet of game.enemyBullets || []) {
+          if (this.bulletIsLarge(bullet) || Math.abs(bullet.speed || 0) > 0.0001) continue;
+          this.setBulletOffset(bullet, 2);
+          bullet.flags = (bullet.flags || 0) | 0x10;
+          bullet.exInts = [120, ...(bullet.exInts || []).slice(1)];
+          const dist = Math.hypot(e.x - bullet.x, e.y - bullet.y);
+          const angle = index === 9 ? dist * Math.PI / 256 + randomAngle : game.rng.range(TAU) - Math.PI;
+          bullet.exFloats = [0.01, angle, -1, -1];
+          this.setBulletVelocity(bullet, angle, 0.01);
+          bullet.age = 0;
+        }
+      } else if (index === 12) {
+        for (const laser of e.ecl.lasers || []) {
+          if (!laser?.inUse) continue;
+          this.spawnStoredPatternAt(game, e, e.x + Math.cos(laser.angle) * 64, e.y + Math.sin(laser.angle) * 64);
+        }
       }
     }
     spawnLaser(game, e, op, a) {
@@ -1323,6 +1499,7 @@
       }
       if (game.addScore) game.addScore(e.score || 0);
       else game.score += e.score || 0;
+      if (s.isBoss && game.spellcardInfo?.isActive) game.endBossSpell?.();
       game.spawnEnemyDeathEffect?.(e, s);
       const drops = this.dropTypes(s.itemDrop);
       for (const drop of drops) {
@@ -1402,7 +1579,7 @@
         callback: EFFECT_CALLBACK_TABLE[id],
         life: EFFECT_LIFE_TABLE[id],
         anm: id === 16 ? this.effectStageAnm : this.effectParticleAnm,
-        imageKey: id === 16 ? 'eff01' : 'etama4'
+        imageKey: id === 16 ? this.effectStageImageKey : 'etama4'
       };
     }
     effectFrame(effectId, frame = 0, randomIndex = 0, color = 0xffffffff) {

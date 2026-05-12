@@ -23,6 +23,7 @@ const PLAYER_DEATH_ANIM_FRAMES = 30;
 const PLAYER_SPAWN_ANIM_FRAMES = 30;
 const PLAYER_DEATHBOMB_WINDOW_FRAMES = 6;
 const ITEM_GET_BORDER_Y = 128;
+const STAGE_TRANSITION_FRAMES = 150;
 const ANM_SCRIPT_PLAYER_BULLET = 64;
 const ANM_SCRIPT_PLAYER_REIMU_A_ORB_BULLET = 65;
 const ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_1 = 65;
@@ -80,6 +81,10 @@ const images = {
   selectBg: 'assets/th06-img/jpg/select00.jpg',
   stg1bg: 'assets/th06-img/png/stg1bg.png',
   stg2bg: 'assets/th06-img/png/stg2bg.png',
+  stg3bg: 'assets/th06-img/png/stg3bg.png',
+  stg4bg: 'assets/th06-img/png/stg4bg.png',
+  stg5bg: 'assets/th06-img/png/stg5bg.png',
+  stg6bg: 'assets/th06-img/png/stg6bg.png',
   front: 'assets/th06-img/png/front.png',
   player00: 'assets/th06-img/png/player00.png',
   player01: 'assets/th06-img/png/player01.png',
@@ -87,9 +92,19 @@ const images = {
   stg1enm2: 'assets/th06-img/png/stg1enm2.png',
   stg2enm: 'assets/th06-img/png/stg2enm.png',
   stg2enm2: 'assets/th06-img/png/stg2enm2.png',
+  stg3enm: 'assets/th06-img/png/stg3enm.png',
+  stg4enm: 'assets/th06-img/png/stg4enm.png',
+  stg5enm: 'assets/th06-img/png/stg5enm.png',
+  stg5enm2: 'assets/th06-img/png/stg5enm2.png',
+  stg6enm: 'assets/th06-img/png/stg6enm.png',
+  stg6enm2: 'assets/th06-img/png/stg6enm2.png',
   etama3: 'assets/th06-img/png/etama3.png',
   etama4: 'assets/th06-img/png/etama4.png',
   eff01: 'assets/th06-img/png/eff01.png',
+  eff02: 'assets/th06-img/png/eff02.png',
+  eff03: 'assets/th06-img/png/eff03.png',
+  eff04: 'assets/th06-img/png/eff04.png',
+  eff05: 'assets/th06-img/png/eff05.png',
   face00a: 'assets/th06-img/png/face00a.png',
   face00b: 'assets/th06-img/png/face00b.png',
   face00c: 'assets/th06-img/png/face00c.png',
@@ -98,7 +113,15 @@ const images = {
   face01c: 'assets/th06-img/png/face01c.png',
   face03a: 'assets/th06-img/png/face03a.png',
   face03b: 'assets/th06-img/png/face03b.png',
-  face05a: 'assets/th06-img/png/face05a.png'
+  face05a: 'assets/th06-img/png/face05a.png',
+  face06a: 'assets/th06-img/png/face06a.png',
+  face06b: 'assets/th06-img/png/face06b.png',
+  face08a: 'assets/th06-img/png/face08a.png',
+  face08b: 'assets/th06-img/png/face08b.png',
+  face09a: 'assets/th06-img/png/face09a.png',
+  face09b: 'assets/th06-img/png/face09b.png',
+  face10a: 'assets/th06-img/png/face10a.png',
+  face10b: 'assets/th06-img/png/face10b.png'
 };
 
 const chars = [
@@ -217,7 +240,15 @@ class AudioBus {
       stage1: new Audio('assets/audio/stage1.mp3'),
       boss1: new Audio('assets/audio/boss1.mp3'),
       stage2: new Audio('assets/audio/th06_04.mp3'),
-      boss2: new Audio('assets/audio/th06_05.mp3')
+      boss2: new Audio('assets/audio/th06_05.mp3'),
+      stage3: new Audio('assets/audio/th06_06.mp3'),
+      boss3: new Audio('assets/audio/th06_07.mp3'),
+      stage4: new Audio('assets/audio/th06_08.mp3'),
+      boss4: new Audio('assets/audio/th06_09.mp3'),
+      stage5: new Audio('assets/audio/th06_10.mp3'),
+      boss5: new Audio('assets/audio/th06_11.mp3'),
+      stage6: new Audio('assets/audio/th06_12.mp3'),
+      boss6: new Audio('assets/audio/th06_13.mp3')
     };
     for (const audio of Object.values(this.tracks)) {
       audio.loop = true;
@@ -485,7 +516,8 @@ class Game {
     this.stageAssets = {
       stageBg: stageData.assets?.stageBgKey || `stg${stageNumber}bg`,
       enemy: stageData.assets?.enemyKey || `stg${stageNumber}enm`,
-      enemy2: stageData.assets?.enemy2Key || `stg${stageNumber}enm2`
+      enemy2: stageData.assets?.enemy2Key || stageData.assets?.enemyKey || `stg${stageNumber}enm2`,
+      effect: stageData.assets?.effectImageKey || 'eff01'
     };
   }
   reset() {
@@ -539,6 +571,7 @@ class Game {
     this.pendingEnemyDamage = new Map();
     this.spellcardInfo = { isActive: false, isCapturing: false, usedBomb: false };
     this.stageClearResult = null;
+    this.stageTransition = null;
     this.dialogue = null;
     this.lastEnemyHit = { x: -999, y: -999 };
     this.frameHomingTarget = null;
@@ -659,6 +692,7 @@ class Game {
     for (const drop of drops) this.spawnItem(drop, this.player.x, this.player.y, { state: 2 });
   }
   update(input) {
+    if (this.phase === 'stageTransition') return this.updateStageTransition(input);
     if (this.phase !== 'playing') return this.updateMenu(input);
     if (input.pressed.has('menu')) {
       this.phase = 'paused';
@@ -697,6 +731,31 @@ class Game {
     const clearFrame = this.stageMeta.presentation.clearAfterFrame;
     if (clearFrame == null) throw new Error(`Missing original Stage ${this.currentStageNumber} clear frame metadata`);
     if (this.stageFrame > clearFrame && !boss && this.enemies.length === 0) this.clear();
+  }
+  updateStageTransition(input) {
+    const tr = this.stageTransition;
+    if (!tr) {
+      this.startNextStage();
+      return;
+    }
+    tr.frame++;
+    this.stageFrame++;
+    this.flash = Math.max(0, this.flash - 1);
+    this.banner = Math.max(0, this.banner - 1);
+    this.stageIntro = 0;
+    this.player.state = 'invuln';
+    this.player.invuln = PLAYER_RESPAWN_INVULN;
+    this.player.shotFrame = -1;
+    const t = clamp(tr.frame / tr.duration, 0, 1);
+    const ease = 1 - (1 - t) * (1 - t);
+    this.player.x = tr.startX + (192 - tr.startX) * ease;
+    this.player.y = tr.startY + (-58 - tr.startY) * ease;
+    this.updateTexts();
+    this.updateEffects();
+    this.updateBossUi();
+    this.shakeFrames = Math.max(0, this.shakeFrames - 1);
+    this.bgmBanner = Math.max(0, this.bgmBanner - 1);
+    if (tr.frame >= tr.duration) this.startNextStage();
   }
   updateMenu(input) {
     const confirm = input.pressed.has('confirm') || input.pressed.has('shoot');
@@ -798,6 +857,8 @@ class Game {
   }
   bossNameForEnemy(enemy) {
     if (this.currentStageNumber === 2 && enemy?.score === 100000) return this.stageMeta.midbossName || '大妖精';
+    if (this.currentStageNumber === 4 && enemy?.ecl?.subId !== 26) return this.stageMeta.midbossName || '小恶魔';
+    if (this.currentStageNumber === 6 && (enemy?.ecl?.subId ?? 99) < 15) return this.stageMeta.midbossName || '十六夜咲夜';
     return this.stageMeta.bossName;
   }
   setBossPresent(present, enemy = null) {
@@ -855,6 +916,7 @@ class Game {
     this.spawnEffectParticles(enemy.ecl?.deathAnm1 ?? 0, enemy.x, enemy.y, 3, 0xffffffff);
     this.spawnEffectParticles((enemy.ecl?.deathAnm2 ?? 0) + 4, enemy.x, enemy.y, 8, 0xffffffff);
     this.spawnEffectParticles(12, enemy.x, enemy.y, 2, 0xff40ffff);
+    this.spawnBossBreakBurst(enemy, false);
     this.shakeFrames = Math.max(this.shakeFrames, 14);
     this.shakeAmp = Math.max(this.shakeAmp, 6);
   }
@@ -1605,9 +1667,18 @@ class Game {
   }
   clear() {
     if (this.phase !== 'playing') return;
+    const hasNextStage = this.hasNextStage();
     this.stageClearResult = this.buildStageClearResult();
     this.addScore(this.stageClearResult.total);
-    this.phase = 'stageClear';
+    this.phase = hasNextStage ? 'stageTransition' : 'stageClear';
+    this.stageTransition = hasNextStage ? {
+      frame: 0,
+      duration: STAGE_TRANSITION_FRAMES,
+      fromStage: this.currentStageNumber,
+      toStage: this.currentStageNumber + 1,
+      startX: this.player.x,
+      startY: this.player.y
+    } : null;
     this.fadeOutBgm(4);
     this.setBossPresent(false);
     this.enemyBullets = [];
@@ -1615,6 +1686,10 @@ class Game {
     this.enemyLasers = [];
     this.playerBullets = [];
     this.activeBombs = [];
+    if (hasNextStage) {
+      this.player.state = 'invuln';
+      this.player.invuln = PLAYER_RESPAWN_INVULN;
+    }
   }
   buildStageClearResult() {
     const stage = this.stageMeta.stageNumber;
@@ -1715,8 +1790,43 @@ class Game {
     this.spawnEffectParticles(burst, x, y, boss ? 8 : 4, 0xffffffff);
     if (boss) {
       this.spawnEffectParticles(12, x, y, 2, 0xff40ffff);
+      this.spawnBossBreakBurst(enemy, true);
+      this.flash = Math.max(this.flash, 18);
       this.shakeFrames = Math.max(this.shakeFrames, 18);
       this.shakeAmp = Math.max(this.shakeAmp, 7);
+    }
+  }
+  spawnBossBreakBurst(enemy, finalBlow = false) {
+    const x = enemy.x;
+    const y = enemy.y;
+    const rings = finalBlow ? 7 : 4;
+    const sparks = finalBlow ? 34 : 20;
+    for (let i = 0; i < rings; i++) {
+      this.effects.push({
+        type: 'bossBreakRing',
+        x,
+        y,
+        age: -i * 5,
+        life: finalBlow ? 86 + i * 4 : 58 + i * 3,
+        radius: 18 + i * 9,
+        expand: finalBlow ? 190 + i * 18 : 112 + i * 12,
+        lineWidth: finalBlow ? 5 - Math.min(i, 3) * 0.45 : 3.2,
+        color: finalBlow ? '#d8ffff' : '#fff6b8'
+      });
+    }
+    for (let i = 0; i < sparks; i++) {
+      const angle = i * TAU / sparks + this.rng.f() * 0.22;
+      const speed = (finalBlow ? 5.4 : 3.8) + this.rng.f() * (finalBlow ? 4.2 : 2.6);
+      this.effects.push({
+        type: 'bossBreakSpark',
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        age: -Math.floor(this.rng.range(finalBlow ? 18 : 10)),
+        life: finalBlow ? 72 + Math.floor(this.rng.range(30)) : 46 + Math.floor(this.rng.range(18)),
+        color: finalBlow && i % 3 === 0 ? '#80f8ff' : i % 2 === 0 ? '#ffffff' : '#ffd0f0'
+      });
     }
   }
   spawnSpellEffect(enemy, colorId, axis, distance) {
@@ -1754,6 +1864,11 @@ class Game {
         const axis = Math.atan2(effect.pos2?.y || 0, effect.pos2?.x || 1);
         effect.x = effect.originX + Math.cos(effect.angleRelated + axis) * effect.radius;
         effect.y = effect.originY + Math.sin(effect.angleRelated + axis) * effect.radius * 0.65;
+      } else if (effect.type === 'bossBreakSpark' && effect.age >= 0) {
+        effect.x += effect.vx;
+        effect.y += effect.vy;
+        effect.vx *= 0.982;
+        effect.vy *= 0.982;
       }
     }
     this.effects = this.effects.filter((effect) => {
@@ -1994,13 +2109,12 @@ class Renderer {
     this.rect(0, 0, 640, 480, '#050509');
     this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#090b18');
     if (g.stageRuntime) {
-      if (this.currentStageNumber === 2) this.stageStdPlanar(g.stageRuntime.std);
-      else this.stageStd(g.stageRuntime.std);
+      this.stageStd(g.stageRuntime.std, fog);
     }
     else {
       this.stageTextureBase(stageBgKey, fog);
+      this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#05020a', fog ? 0.18 : 0.24);
     }
-    this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#05020a', fog ? 0.18 : 0.24);
     if (g.spellcardInfo?.isActive) this.spellBackground();
   }
   stageTextureBase(stageBgKey, fog) {
@@ -2025,8 +2139,9 @@ class Renderer {
     const g = this.game;
     const t = g.spellcardInfo?.frame ?? g.stageFrame;
     const anmFrame = g.stageRuntime?.effectFrame?.(16, t, 0, 0xffffffff);
-    if (anmFrame && this.assets.eff01) {
-      const img = this.assets.eff01;
+    const imageKey = anmFrame?.imageKey || g.stageAssets?.effect || 'eff01';
+    if (anmFrame && this.assets[imageKey]) {
+      const img = this.assets[imageKey];
       ctx.save();
       ctx.beginPath();
       ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
@@ -2043,7 +2158,7 @@ class Renderer {
           ctx.fillRect(0, 0, PLAYFIELD.width + img.width * 2, PLAYFIELD.height + img.height * 2);
         }
       } else {
-        this.drawAnmFrame('eff01', anmFrame, PLAYFIELD.x, PLAYFIELD.y, { alpha: 0.72, blend: 'source-over' });
+        this.drawAnmFrame(imageKey, anmFrame, PLAYFIELD.x, PLAYFIELD.y, { alpha: 0.72, blend: 'source-over' });
       }
       ctx.restore();
       return;
@@ -2130,7 +2245,21 @@ class Renderer {
     ctx.drawImage(img, 0, 0);
     ctx.restore();
   }
-  stageDrawProjectedStrip(img, rect, top, bottom, sy0, sy1) {
+  stageFillTriangle(p0, p1, p2, color, alpha) {
+    if (alpha <= 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha *= clamp(alpha, 0, 1);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  stageDrawProjectedStrip(img, rect, top, bottom, sy0, sy1, fog) {
     const srcTop = rect.y + sy0;
     const srcBottom = rect.y + sy1;
     const srcLeft = rect.x;
@@ -2149,8 +2278,14 @@ class Renderer {
       bottom.br,
       bottom.bl
     );
+    if (fog && fog.far > fog.near) {
+      const depth = (top.tl.z + top.tr.z + bottom.bl.z + bottom.br.z) / 4;
+      const alpha = clamp((depth - fog.near) / (fog.far - fog.near), 0, 1);
+      this.stageFillTriangle(top.tl, top.tr, bottom.bl, fog.css, alpha);
+      this.stageFillTriangle(top.tr, bottom.br, bottom.bl, fog.css, alpha);
+    }
   }
-  stageDrawProjectedQuad(img, rect, x, y, z, w, h, anchorTopLeft, camera, color) {
+  stageDrawProjectedQuad(img, rect, x, y, z, w, h, anchorTopLeft, camera, color, fog) {
     const tint = (color & 0x00ffffff) !== 0x00ffffff;
     let drawImg = img;
     if (tint) {
@@ -2176,65 +2311,10 @@ class Renderer {
       const top = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y0, y0);
       const bottom = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y1, y1);
       if (!top || !bottom) continue;
-      this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * i / steps, rect.h * (i + 1) / steps);
+      this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * i / steps, rect.h * (i + 1) / steps, fog);
     }
   }
-  stageDrawPlanarQuad(img, rect, x, y, w, h, color) {
-    const ctx = this.ctx;
-    const tint = (color & 0x00ffffff) !== 0x00ffffff;
-    let drawImg = img;
-    if (tint) {
-      this.tintCanvas.width = img.width;
-      this.tintCanvas.height = img.height;
-      const tctx = this.tintCtx;
-      tctx.clearRect(0, 0, img.width, img.height);
-      tctx.globalCompositeOperation = 'source-over';
-      tctx.drawImage(img, 0, 0);
-      const c = colorParts(color);
-      tctx.globalCompositeOperation = 'multiply';
-      tctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
-      tctx.fillRect(0, 0, img.width, img.height);
-      tctx.globalCompositeOperation = 'destination-in';
-      tctx.drawImage(img, 0, 0);
-      tctx.globalCompositeOperation = 'source-over';
-      drawImg = this.tintCanvas;
-    }
-    ctx.drawImage(drawImg, rect.x, rect.y, rect.w, rect.h, PLAYFIELD.x + x, PLAYFIELD.y + y, w, h);
-  }
-  stageStdPlanar(std) {
-    const ctx = this.ctx;
-    const cam = std.camera(this.game.stageFrame);
-    const stageBgKey = this.game.stageAssets?.stageBg || 'stg2bg';
-    const img = this.assets[stageBgKey];
-    if (!img) return;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
-    ctx.clip();
-    for (let zLevel = 0; zLevel < 4; zLevel++) {
-      for (const inst of std.instances) {
-        const obj = std.objects[inst.id];
-        if (!obj || obj.zLevel !== zLevel) continue;
-        for (const q of obj.quads) {
-          const rect = std.anm.scriptSprite(q.script, 0, this.game.stageFrame, { keepExitSprite: true });
-          if (!rect) continue;
-          const vmX = q.x + inst.x - cam.x;
-          const vmY = q.y + inst.y - cam.y;
-          const rawW = Math.max(0.001, q.w || rect.w * Math.abs(rect.scaleX || 1));
-          const rawH = Math.max(0.001, q.h || rect.h * Math.abs(rect.scaleY || 1));
-          if (vmX + rawW < -32 || vmX > PLAYFIELD.width + 32 || vmY + rawH < -32 || vmY > PLAYFIELD.height + 32) continue;
-          ctx.save();
-          ctx.globalAlpha = (rect.alpha ?? 255) / 255;
-          ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
-          const color = (rect.color ?? 0xffffffff) >>> 0;
-          this.stageDrawPlanarQuad(img, rect, vmX, vmY, rawW, rawH, color);
-          ctx.restore();
-        }
-      }
-    }
-    ctx.restore();
-  }
-  stageStd(std) {
+  stageStd(std, fog) {
     const ctx = this.ctx;
     const cam = std.camera(this.game.stageFrame);
     const camera = this.stageCameraBasis(std.facing?.(this.game.stageFrame));
@@ -2265,7 +2345,7 @@ class Renderer {
           ctx.globalAlpha = (rect.alpha ?? 255) / 255;
           ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
           const color = (rect.color ?? 0xffffffff) >>> 0;
-          this.stageDrawProjectedQuad(img, rect, vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, color);
+          this.stageDrawProjectedQuad(img, rect, vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, color, fog);
           ctx.restore();
         }
       }
@@ -2406,12 +2486,46 @@ class Renderer {
     ctx.restore();
   }
   effectSprite(effect) {
+    if (effect.age < 0) return;
     const x = PLAYFIELD.x + effect.x;
     const y = PLAYFIELD.y + effect.y;
     const t = effect.age / Math.max(1, effect.life);
     if (effect.type === 'anmEffect') {
       const frame = this.game.stageRuntime?.effectFrame?.(effect.effectId, effect.age, effect.randomIndex || 0, effect.color);
       if (frame && this.drawAnmFrame(frame.imageKey, frame, x, y, { color: effect.color, alpha: Math.max(0, 1 - Math.max(0, t - 0.92) / 0.08) })) return;
+    } else if (effect.type === 'bossBreakRing') {
+      const ctx = this.ctx;
+      const ease = 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.max(0, 1 - t) * 0.88;
+      ctx.strokeStyle = effect.color;
+      ctx.lineWidth = Math.max(0.8, (effect.lineWidth || 3) * (1 - t * 0.45));
+      ctx.beginPath();
+      ctx.arc(x, y, effect.radius + effect.expand * ease, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha *= 0.45;
+      ctx.lineWidth *= 0.45;
+      ctx.beginPath();
+      ctx.arc(x, y, effect.radius * 0.55 + effect.expand * ease * 0.48, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    } else if (effect.type === 'bossBreakSpark') {
+      const ctx = this.ctx;
+      const speed = Math.hypot(effect.vx || 0, effect.vy || 0);
+      const nx = speed > 0 ? (effect.vx || 0) / speed : 1;
+      const ny = speed > 0 ? (effect.vy || 0) / speed : 0;
+      const len = 10 + speed * 2.2;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.strokeStyle = effect.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - nx * len * 0.4, y - ny * len * 0.4);
+      ctx.lineTo(x + nx * len, y + ny * len);
+      ctx.stroke();
+      ctx.restore();
     }
   }
   bombEffect(bomb) {
@@ -2769,7 +2883,9 @@ class Renderer {
   dialoguePortrait(side, script, x, y, flip) {
     const family = this.game.spec().family;
     const playerFaces = family === 'marisa' ? ['face01a', 'face01a', 'face01b', 'face01b', 'face01c', 'face01c'] : ['face00a', 'face00a', 'face00b', 'face00b', 'face00c', 'face00c'];
-    const bossFaces = this.game.stageMeta.bossFaces || ['face03a', 'face03a', 'face03b', 'face03b'];
+    const dialogueIndex = this.game.dialogue?.index ?? -1;
+    const useMidbossFaces = this.game.currentStageNumber === 6 && dialogueIndex % 10 === 2;
+    const bossFaces = (useMidbossFaces && this.game.stageMeta.midbossFaces) || this.game.stageMeta.bossFaces || ['face03a', 'face03a', 'face03b', 'face03b'];
     const key = side === 0 ? playerFaces[script] || playerFaces[0] : bossFaces[script] || bossFaces[0];
     const sx = script % 2 ? 128 : 0;
     const ctx = this.ctx;
