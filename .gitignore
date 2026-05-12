@@ -10,6 +10,7 @@ scripts/
 tests/
 package.json
 package-lock.json
+playwright.config.*
 
 assets/th06-img/jpg/*
 !assets/th06-img/jpg/select00.jpg

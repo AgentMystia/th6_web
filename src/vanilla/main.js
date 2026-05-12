@@ -2404,7 +2404,7 @@ class Renderer {
     if (e.ecl) {
       const rect = this.game.stageRuntime.enemyRect(e);
       if (rect) {
-        const sheet = e.ecl.currentAnm >= 128 ? this.game.stageAssets.enemy2 : this.game.stageAssets.enemy;
+        const sheet = rect.imageKey === 'enemy2' ? this.game.stageAssets.enemy2 : this.game.stageAssets.enemy;
         const scale = e.ecl.isBoss ? 1.08 : 1;
         const rotation = e.ecl.anmRotateWithVelocity && (Math.abs(e.ecl.frameVx) > 0.001 || Math.abs(e.ecl.frameVy) > 0.001)
           ? Math.atan2(e.ecl.frameVy, e.ecl.frameVx) + Math.PI / 2
@@ -2924,6 +2924,135 @@ async function main() {
   const audio = new AudioBus();
   game.audio = audio;
   const renderer = new Renderer(canvas, assets, game);
+  const testMode = new URLSearchParams(location.search).has('test');
+  if (testMode) {
+    const round = (value) => Math.round((value || 0) * 1000) / 1000;
+    const snapshot = () => ({
+      phase: game.phase,
+      stage: game.currentStageNumber,
+      frame: game.stageFrame,
+      track: game.track,
+      player: { x: round(game.player.x), y: round(game.player.y), state: game.player.state },
+      power: game.power,
+      lives: game.lives,
+      bombs: game.bombs,
+      score: game.score,
+      graze: game.graze,
+      boss: {
+        present: game.bossUi.present,
+        name: game.bossUi.bossName,
+        spellName: game.bossUi.spellName,
+        spellIndex: game.bossUi.spellIndex,
+        timer: game.bossUi.timerSeconds
+      },
+      enemies: game.enemies.map((e) => ({
+        id: e.id,
+        subId: e.ecl?.subId,
+        kind: e.kind,
+        x: round(e.x),
+        y: round(e.y),
+        z: round(e.z),
+        hp: round(e.hp),
+        maxHp: round(e.maxHp),
+        score: e.score,
+        itemDrop: e.ecl?.itemDrop,
+        boss: !!e.ecl?.isBoss,
+        anm: e.ecl?.currentAnm,
+        spriteSheet: game.stageRuntime.enemyRect(e)?.imageKey || null,
+        hitbox: e.ecl?.hitbox
+      })),
+      bullets: game.enemyBullets.map((b) => ({
+        x: round(b.x),
+        y: round(b.y),
+        vx: round(b.vx),
+        vy: round(b.vy),
+        speed: round(b.speed),
+        angle: round(b.angle),
+        sprite: b.eclSprite,
+        offset: b.eclOffset,
+        flags: b.flags || 0,
+        hitR: round(b.hitR),
+        grazeSize: b.grazeSize ? { x: round(b.grazeSize.x), y: round(b.grazeSize.y) } : null
+      })),
+      lasers: game.enemyLasers.map((l) => ({
+        x: round(l.x),
+        y: round(l.y),
+        angle: round(l.angle),
+        startOffset: round(l.startOffset),
+        endOffset: round(l.endOffset),
+        width: round(l.width),
+        state: l.state
+      })),
+      items: game.items.map((item) => ({ type: item.type, x: round(item.x), y: round(item.y), state: item.state })),
+      effects: game.effects.map((effect) => ({ type: effect.type, x: round(effect.x), y: round(effect.y), effectId: effect.effectId, life: effect.life })),
+      runtime: {
+        timelineIndex: game.stageRuntime.timelineIndex,
+        timelineLength: game.stageRuntime.ecl.timeline.length,
+        stageBg: game.stageAssets.stageBg,
+        effect: game.stageAssets.effect
+      }
+    });
+    const setStage = (stage, options = {}) => {
+      game.loadStage(stage);
+      game.resetStageState();
+      game.phase = 'playing';
+      game.power = options.power ?? 128;
+      game.lives = options.lives ?? game.lives;
+      game.bombs = options.bombs ?? game.bombs;
+      game.player.x = options.x ?? 192;
+      game.player.y = options.y ?? 384;
+      game.player.state = options.alive ? 'alive' : 'invuln';
+      game.player.invuln = options.alive ? 0 : PLAYER_INITIAL_INVULN;
+      game.player.bulletGrace = options.bulletGrace ?? 0;
+      game.track = null;
+      renderer.draw();
+      return snapshot();
+    };
+    const advance = (frames, options = {}) => {
+      const input = {
+        held: new Set(options.held || []),
+        pressed: new Set(options.pressed || [])
+      };
+      for (let i = 0; i < frames; i++) {
+        if (options.x != null) game.player.x = options.x;
+        if (options.y != null) game.player.y = options.y;
+        if (options.invuln) {
+          game.player.state = 'invuln';
+          game.player.invuln = PLAYER_RESPAWN_INVULN;
+        }
+        game.update(input);
+        input.pressed.clear();
+      }
+      renderer.draw();
+      return snapshot();
+    };
+    const canvasStats = () => {
+      const data = renderer.ctx.getImageData(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height).data;
+      let nonBlack = 0;
+      let alpha = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 8 || data[i + 1] > 8 || data[i + 2] > 8) nonBlack++;
+        if (data[i + 3] > 0) alpha++;
+      }
+      return { nonBlack, alpha, total: data.length / 4 };
+    };
+    window.__TH06_TEST__ = {
+      setStage,
+      advance,
+      snapshot,
+      canvasStats,
+      constants: {
+        playerHitboxHalf: PLAYER_HITBOX_HALF,
+        playerGrazePadding: PLAYER_GRAZE_PADDING,
+        bulletCap: TH06_LOGIC.ENEMY_BULLET_CAP,
+        moveArea: MOVE_AREA,
+        playfield: PLAYFIELD
+      }
+    };
+    window.__TH06_TEST_READY__ = true;
+    renderer.draw();
+    return;
+  }
   let last = performance.now();
   let acc = 0;
   let fpsFrames = 0;

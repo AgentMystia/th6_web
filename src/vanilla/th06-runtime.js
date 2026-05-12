@@ -1569,7 +1569,15 @@
     }
     enemyRect(e) {
       const script = e.ecl?.currentAnm ?? 0;
-      return (script >= 128 ? this.enemy2Anm : this.enemyAnm).scriptSprite(script, 0, e.ecl?.anmFrame || e.frame || 0, { keepExitSprite: true });
+      const frame = e.ecl?.anmFrame || e.frame || 0;
+      const primary = script >= 128 ? this.enemy2Anm : this.enemyAnm;
+      const primaryKey = script >= 128 ? 'enemy2' : 'enemy';
+      const fallback = script >= 128 ? this.enemyAnm : this.enemy2Anm;
+      const fallbackKey = script >= 128 ? 'enemy' : 'enemy2';
+      const rect = primary.scriptSprite(script, 0, frame, { keepExitSprite: true });
+      if (rect) return { ...rect, imageKey: primaryKey };
+      const fallbackRect = fallback.scriptSprite(script, 0, frame, { keepExitSprite: true });
+      return fallbackRect ? { ...fallbackRect, imageKey: fallbackKey } : null;
     }
     effectSpec(effectId) {
       const id = clamp(effectId | 0, 0, EFFECT_SCRIPT_TABLE.length - 1);
