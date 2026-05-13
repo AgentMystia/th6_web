@@ -386,6 +386,9 @@
       this.objects = [];
       this.instances = [];
       this.cameraKeys = [];
+      this.pauseFrames = new Set();
+      this.frame = 0;
+      this.unpauseRequested = false;
       const defaultFog = { frame: 0, color: 0xff100020, r: 16, g: 0, b: 32, near: 200, far: 500 };
       const defaultFacing = { frame: 0, x: 0, y: 0, z: 1 };
       this.fogKeys = [defaultFog];
@@ -455,11 +458,24 @@
         }
         else if (op === 3) pendingFacingDuration = Math.max(0, key.i0 | 0);
         else if (op === 4) pendingFogDuration = Math.max(0, key.i0 | 0);
+        else if (op === 5) this.pauseFrames.add(Math.max(0, frame));
       }
       this.cameraKeys.sort((a, b) => a.frame - b.frame);
       this.fogKeys.sort((a, b) => a.frame - b.frame);
       this.fogEvents.sort((a, b) => a.frame - b.frame);
       this.facingEvents.sort((a, b) => a.frame - b.frame);
+    }
+    reset() {
+      this.frame = 0;
+      this.unpauseRequested = false;
+    }
+    unpause() {
+      this.unpauseRequested = true;
+    }
+    advance() {
+      if (this.pauseFrames.has(this.frame) && !this.unpauseRequested) return;
+      this.unpauseRequested = false;
+      this.frame++;
     }
     parseObject(off) {
       const v = this.view;
@@ -671,11 +687,13 @@
       this.timelineIndex = 0;
       this.randomItemIndex = 0;
       this.randomSpawnIndex = 0;
+      this.std.reset();
     }
     isTimelineComplete() {
       return this.timelineIndex >= this.ecl.timeline.length;
     }
     update(game) {
+      this.std.advance();
       while (this.timelineIndex < this.ecl.timeline.length && this.ecl.timeline[this.timelineIndex].time <= game.stageFrame) {
         const action = this.spawnTimeline(game, this.ecl.timeline[this.timelineIndex]);
         if (action === 'hold') break;
@@ -784,7 +802,7 @@
         anmExFlags: 0xff,
         frameVx: 0,
         frameVy: 0,
-        anmRotateWithVelocity: false,
+        anmRotateWithAngle: false,
         bossLifeCount: 0,
         lasers: [],
         laserStore: 0,
@@ -843,6 +861,12 @@
       if (e.ecl.isBoss) e.ecl.bossTimer++;
       this.updateAnmPose(e);
       e.ecl.anmFrame++;
+      if (e.ecl.anmInterrupt?.slot === -1) e.ecl.anmInterrupt.frame++;
+      for (const slot of e.ecl.anmSlots) {
+        if (!slot) continue;
+        slot.frame++;
+        if (slot.interrupt) slot.interrupt.frame++;
+      }
       const on = e.x > -48 && e.x < 432 && e.y > -64 && e.y < 512;
       e.ecl.seen = e.ecl.seen || on;
       e.kind = e.ecl.isBoss ? 'boss' : this.enemyKindFromAnm(e.ecl.currentAnm);
@@ -853,6 +877,7 @@
       if (script < 0 || s.currentAnm === script) return;
       s.currentAnm = script;
       s.anmFrame = 0;
+      s.anmInterrupt = null;
     }
     updateAnmPose(e) {
       const s = e.ecl;
@@ -1096,7 +1121,7 @@
         s.spellcardSprite = v.i16(a);
         const spellId = v.i16(a + 2);
         s.spellName = this.readCString(a + 4);
-        s.spellNameEnglish = game.startBossSpell?.(spellId) || '';
+        s.spellNameEnglish = game.startBossSpell?.(spellId, s.spellcardSprite, s.spellName) || '';
         this.turnBulletsIntoPointItems(game);
         game.banner = 150;
       } else if (op === 94) {
@@ -1105,15 +1130,17 @@
         game.endBossSpell?.();
         this.turnBulletsIntoPointItems(game);
       } else if (op === 95) this.spawnChildEnemy(game, e, a);
-      else if (op === 96) game.enemies.length = 0;
+      else if (op === 96) this.killNonBossEnemies(game);
       else if (op === 97) {
         const currentAnm = v.i32(a);
         this.setCurrentAnm(e, currentAnm);
       }
       else if (op === 99) {
-        const slot = Math.max(0, v.i32(a) | 0);
-        const script = v.i32(a + 4);
-        s.anmSlots[slot] = { script, frame: 0 };
+        const slot = v.i32(a) | 0;
+        if (slot >= 0 && slot < 8) {
+          const script = v.i32(a + 4);
+          s.anmSlots[slot] = { script, frame: 0 };
+        }
       }
       else if (op === 98) {
         s.anmExDefaults = v.i16(a);
@@ -1159,7 +1186,7 @@
         game.spawnEffectParticles?.(v.i32(a), e.x, e.y, v.i32(a + 4), v.u32(a + 8));
       }
       else if (op === 119) this.dropPowerItems(game, e, v.i32(a));
-      else if (op === 120) s.anmRotateWithVelocity = !!v.i32(a);
+      else if (op === 120) s.anmRotateWithAngle = !!v.i32(a);
       else if (op === 121) this.runExInstruction(game, e, v.i32(a), v.i32(a + 4));
       else if (op === 122) {
         s.exRepeatIndex = v.i32(a);
@@ -1170,13 +1197,18 @@
         const type = ITEM_TABLE[v.i32(a)];
         if (type) this.spawnSourceItem(game, type, e.x, e.y);
       }
-      else if (op === 125 || op === 127) {}
+      else if (op === 125) this.std.unpause();
       else if (op === 126) {
         s.bossLifeCount = v.i32(a);
         game.setBossLifeCount?.(s.bossLifeCount);
       }
+      else if (op === 127) {}
       else if (op === 128) s.anmInterrupt = { slot: -1, value: v.i32(a), frame: 0 };
-      else if (op === 129) s.anmInterrupt = { slot: v.i32(a), value: v.i32(a + 4), frame: 0 };
+      else if (op === 129) {
+        const slot = v.i32(a) | 0;
+        const entry = s.anmSlots[slot];
+        if (slot >= 0 && slot < 8 && entry) entry.interrupt = { slot, value: v.i32(a + 4), frame: 0 };
+      }
       else if (op === 131) {
         s.bulletRankSpeedLow = v.f32(a);
         s.bulletRankSpeedHigh = v.f32(a + 4);
@@ -1214,6 +1246,13 @@
       for (const enemy of game.enemies) {
         if (enemy === owner || enemy.ecl?.isBoss) continue;
         enemy.hp = 0;
+      }
+    }
+    killNonBossEnemies(game) {
+      for (const enemy of game.enemies) {
+        if (enemy.ecl?.isBoss || enemy.kind === 'boss') continue;
+        enemy.hp = 0;
+        if (!enemy.ecl) enemy.dead = true;
       }
     }
     checkCallbacks(game, e) {
@@ -1615,7 +1654,7 @@
       }
       if (game.addScore) game.addScore(e.score || 0);
       else game.score += e.score || 0;
-      if (s.isBoss && game.spellcardInfo?.isActive) game.endBossSpell?.();
+      if (s.isBoss && game.spellcardInfo?.isActive) game.endBossSpell?.({ fromBossDeath: true });
       game.spawnEnemyDeathEffect?.(e, s);
       const drops = this.dropTypes(s.itemDrop);
       for (const drop of drops) {
@@ -1712,17 +1751,37 @@
         imageKey: spec.imageKey
       };
     }
-    enemyRect(e) {
-      const script = e.ecl?.currentAnm ?? 0;
-      const frame = e.ecl?.anmFrame || e.frame || 0;
+    enemyScriptRect(script, frame, interrupt = null, keepExitSprite = true) {
+      const options = { keepExitSprite };
+      if (interrupt) {
+        options.interrupt = interrupt.value;
+        options.interruptFrame = interrupt.frame || 0;
+      }
       const primary = script >= 128 ? this.enemy2Anm : this.enemyAnm;
       const primaryKey = script >= 128 ? 'enemy2' : 'enemy';
       const fallback = script >= 128 ? this.enemyAnm : this.enemy2Anm;
       const fallbackKey = script >= 128 ? 'enemy' : 'enemy2';
-      const rect = primary.scriptSprite(script, 0, frame, { keepExitSprite: true });
+      const rect = primary.scriptSprite(script, 0, frame, options);
       if (rect) return { ...rect, imageKey: primaryKey };
-      const fallbackRect = fallback.scriptSprite(script, 0, frame, { keepExitSprite: true });
+      const fallbackRect = fallback.scriptSprite(script, 0, frame, options);
       return fallbackRect ? { ...fallbackRect, imageKey: fallbackKey } : null;
+    }
+    enemyRect(e) {
+      const script = e.ecl?.currentAnm ?? 0;
+      const frame = e.ecl?.anmFrame || e.frame || 0;
+      const interrupt = e.ecl?.anmInterrupt;
+      return this.enemyScriptRect(script, frame, interrupt?.slot === -1 ? interrupt : null, true);
+    }
+    enemySlotRects(e, start = 0, end = 8) {
+      const slots = e.ecl?.anmSlots || [];
+      const rects = [];
+      for (let slot = Math.max(0, start | 0); slot < Math.min(8, end | 0); slot++) {
+        const entry = slots[slot];
+        if (!entry) continue;
+        const rect = this.enemyScriptRect(entry.script, entry.frame || 0, entry.interrupt || null, false);
+        if (rect) rects.push(rect);
+      }
+      return rects;
     }
     effectSpec(effectId) {
       const id = clamp(effectId | 0, 0, EFFECT_SCRIPT_TABLE.length - 1);

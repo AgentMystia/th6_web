@@ -22,11 +22,16 @@ const PLAYER_DEATH_DROP_DELAY = 6;
 const PLAYER_DEATH_ANIM_FRAMES = 30;
 const PLAYER_SPAWN_ANIM_FRAMES = 30;
 const PLAYER_DEATHBOMB_WINDOW_FRAMES = 6;
+const PLAYER_BULLET_CAP = 80;
 const ITEM_GET_BORDER_Y = 128;
 const STAGE_TRANSITION_FRAMES = 240;
 const STAGE_TRANSITION_FLY_FRAMES = 120;
 const STAGE_ENTRY_FADE_FRAMES = 45;
 const FULL_POWER_MODE_FRAMES = 120;
+const ENEMY_SPELLCARD_DECLARATION_FRAMES = 130;
+const ENEMY_SPELLCARD_PORTRAIT_FRAMES = 120;
+const PLAYER_BOMB_DECLARATION_FRAMES = 130;
+const PLAYER_BOMB_PORTRAIT_FRAMES = 120;
 const ANM_SCRIPT_PLAYER_BULLET = 64;
 const ANM_SCRIPT_PLAYER_REIMU_A_ORB_BULLET = 65;
 const ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_1 = 65;
@@ -368,7 +373,8 @@ class AudioBus {
     requestAnimationFrame(fade);
   }
   sync(id) {
-    this.playBgm(id);
+    if (id == null) return;
+    this.playBgm(id, { restart: false });
   }
 }
 
@@ -585,6 +591,9 @@ class Game {
     this.stageClearResult = null;
     this.stageTransition = null;
     this.dialogue = null;
+    this.spellcardDeclaration = null;
+    this.playerBombDeclaration = null;
+    this.spellcardBonusPopup = null;
     this.lastEnemyHit = { x: -999, y: -999 };
     this.frameHomingTarget = null;
     this.bossUi = this.createBossUi();
@@ -609,7 +618,7 @@ class Game {
       lives: 0,
       timerSeconds: 0,
       lastTimerSeconds: null,
-      bossName: this.stageMeta.bossName,
+      bossName: this.stageMeta.bossDisplayName || this.stageMeta.bossName,
       spellName: '',
       spellIndex: -1
     };
@@ -720,6 +729,18 @@ class Game {
     window.__touhouShotType = this.selected;
     this.flash = Math.max(0, this.flash - 1);
     this.banner = Math.max(0, this.banner - 1);
+    if (this.spellcardDeclaration) {
+      this.spellcardDeclaration.timer--;
+      if (this.spellcardDeclaration.timer <= 0) this.spellcardDeclaration = null;
+    }
+    if (this.playerBombDeclaration) {
+      this.playerBombDeclaration.timer--;
+      if (this.playerBombDeclaration.timer <= 0) this.playerBombDeclaration = null;
+    }
+    if (this.spellcardBonusPopup) {
+      this.spellcardBonusPopup.timer--;
+      if (this.spellcardBonusPopup.timer <= 0) this.spellcardBonusPopup = null;
+    }
     this.fullPowerMode = Math.max(0, this.fullPowerMode - 1);
     this.stageEntryFade = Math.max(0, this.stageEntryFade - 1);
     this.stageIntro = Math.max(0, this.stageIntro - 1);
@@ -761,6 +782,18 @@ class Game {
     this.stageFrame++;
     this.flash = Math.max(0, this.flash - 1);
     this.banner = Math.max(0, this.banner - 1);
+    if (this.spellcardDeclaration) {
+      this.spellcardDeclaration.timer--;
+      if (this.spellcardDeclaration.timer <= 0) this.spellcardDeclaration = null;
+    }
+    if (this.playerBombDeclaration) {
+      this.playerBombDeclaration.timer--;
+      if (this.playerBombDeclaration.timer <= 0) this.playerBombDeclaration = null;
+    }
+    if (this.spellcardBonusPopup) {
+      this.spellcardBonusPopup.timer--;
+      if (this.spellcardBonusPopup.timer <= 0) this.spellcardBonusPopup = null;
+    }
     this.fullPowerMode = Math.max(0, this.fullPowerMode - 1);
     this.stageIntro = 0;
     this.player.state = 'invuln';
@@ -876,15 +909,15 @@ class Game {
     return TH06_LOGIC.spellName(index);
   }
   bossNameForEnemy(enemy) {
-    if (this.currentStageNumber === 2 && enemy?.score === 100000) return this.stageMeta.midbossName || '大妖精';
-    if (this.currentStageNumber === 4 && enemy?.ecl?.subId !== 26) return this.stageMeta.midbossName || '小恶魔';
-    if (this.currentStageNumber === 6 && (enemy?.ecl?.subId ?? 99) < 15) return this.stageMeta.midbossName || '十六夜咲夜';
-    return this.stageMeta.bossName;
+    if (this.currentStageNumber === 2 && enemy?.score === 100000) return this.stageMeta.midbossDisplayName || this.stageMeta.midbossName || 'Daiyousei';
+    if (this.currentStageNumber === 4 && enemy?.ecl?.subId !== 26) return this.stageMeta.midbossDisplayName || this.stageMeta.midbossName || 'Koakuma';
+    if (this.currentStageNumber === 6 && (enemy?.ecl?.subId ?? 99) < 15) return this.stageMeta.midbossDisplayName || this.stageMeta.midbossName || 'Sakuya Izayoi';
+    return this.stageMeta.bossDisplayName || this.stageMeta.bossName;
   }
   setBossPresent(present, enemy = null) {
     const ui = this.bossUi;
     ui.present = !!present;
-    ui.bossName = enemy ? this.bossNameForEnemy(enemy) : this.stageMeta.bossName;
+    ui.bossName = enemy ? this.bossNameForEnemy(enemy) : this.stageMeta.bossDisplayName || this.stageMeta.bossName;
     if (present && ui.state === 0) {
       ui.state = 1;
       ui.opacity = 0;
@@ -895,7 +928,7 @@ class Game {
   setBossLifeCount(count) {
     this.bossUi.lives = Math.max(0, count | 0);
   }
-  startBossSpell(index) {
+  startBossSpell(index, spellcardSprite = 0, originalSpellName = '') {
     const name = this.spellNameFor(index);
     this.bossUi.spellIndex = index;
     this.bossUi.spellName = name;
@@ -907,23 +940,54 @@ class Game {
     this.spellcardInfo.captureScore = TH06_LOGIC.SPELLCARD_SCORE[index];
     this.banner = 150;
     const boss = this.enemies.find((e) => e.kind === 'boss' || e.ecl?.isBoss);
+    this.showBossSpellDeclaration({
+      spellName: name,
+      originalSpellName,
+      spellcardSprite,
+      enemy: boss
+    });
+    this.audio?.sfx(SOUND.BOMB);
     if (boss) {
       this.spawnEffectParticles(13, boss.x, boss.y, 1, 0xffffffff);
       this.spawnEffectParticles(12, boss.x, boss.y, 2, 0xff8080ff);
     }
-    if (name) this.text(name, 58, 76, 150, '#dce3ff');
     return name;
   }
-  endBossSpell() {
+  showBossSpellDeclaration({ spellName, originalSpellName = '', spellcardSprite = 0, enemy = null } = {}) {
+    const sprite = Math.max(0, spellcardSprite | 0);
+    const bossName = enemy ? this.bossNameForEnemy(enemy) : this.bossUi.bossName;
+    const useMidbossFaces = bossName === this.stageMeta.midbossDisplayName || bossName === this.stageMeta.midbossName;
+    const faces = (useMidbossFaces && this.stageMeta.midbossFaces) || this.stageMeta.bossFaces || ['face03a', 'face03a', 'face03b', 'face03b'];
+    const key = faces[sprite] || faces[Math.min(faces.length - 1, sprite)] || faces[0] || 'face03a';
+    this.spellcardDeclaration = {
+      timer: ENEMY_SPELLCARD_DECLARATION_FRAMES,
+      duration: ENEMY_SPELLCARD_DECLARATION_FRAMES,
+      portraitDuration: ENEMY_SPELLCARD_PORTRAIT_FRAMES,
+      spellName: spellName || originalSpellName || '',
+      originalSpellName: originalSpellName || '',
+      sprite,
+      faceKey: key
+    };
+  }
+  showPlayerBombDeclaration(spellName = '') {
+    const family = this.spec().family;
+    this.playerBombDeclaration = {
+      timer: PLAYER_BOMB_DECLARATION_FRAMES,
+      duration: PLAYER_BOMB_DECLARATION_FRAMES,
+      portraitDuration: PLAYER_BOMB_PORTRAIT_FRAMES,
+      spellName,
+      faceKey: family === 'marisa' ? 'face01a' : 'face00a'
+    };
+  }
+  endBossSpell(options = {}) {
     const boss = this.enemies.find((e) => e.kind === 'boss' || e.ecl?.isBoss);
-    if (boss) this.spellBreakEffect(boss);
+    if (boss) this.spellBreakEffect(boss, { playSound: !options.fromBossDeath });
     this.effects = this.effects.filter((effect) => !effect.spellEffect);
     if (this.spellcardInfo.isActive && this.spellcardInfo.isCapturing) {
       const bonus = TH06_LOGIC.spellcardBonus(this.spellcardInfo.idx || 0, this.bossUi.timerSeconds);
       this.addScore(bonus);
       this.spellcardsCaptured++;
-      this.text('Spell Card Bonus!', 116, 98, 150, '#fff0a8');
-      this.text(String(bonus), 154, 118, 150, '#fff0a8');
+      this.showSpellcardBonus(bonus);
     }
     this.bossUi.spellName = '';
     this.bossUi.spellIndex = -1;
@@ -932,12 +996,18 @@ class Game {
     this.spellcardInfo.usedBomb = false;
     this.spellcardInfo.frame = 0;
   }
-  spellBreakEffect(enemy) {
-    this.spawnEffectParticles(enemy.ecl?.deathAnm1 ?? 0, enemy.x, enemy.y, 3, 0xffffffff);
-    this.spawnEffectParticles((enemy.ecl?.deathAnm2 ?? 0) + 4, enemy.x, enemy.y, 8, 0xffffffff);
-    this.spawnEffectParticles(12, enemy.x, enemy.y, 2, 0xff40ffff);
+  showSpellcardBonus(bonus) {
+    this.spellcardBonusPopup = { bonus: Math.max(0, bonus | 0), timer: 280 };
+  }
+  spellBreakEffect(enemy, options = {}) {
+    if (options.playSound) this.audio?.sfx(SOUND.ENEMY_DEAD);
+    this.spawnEffectParticles(enemy.ecl?.deathAnm1 ?? 0, enemy.x, enemy.y, 1, 0xffffffff);
+    this.spawnEffectParticles((enemy.ecl?.deathAnm2 ?? 0) + 4, enemy.x, enemy.y, 4, 0xffffffff);
+    this.spawnEffectParticles(12, enemy.x, enemy.y, 1, 0xff40ffff);
     this.spawnBossBreakBurst(enemy, false);
-    this.shakeFrames = Math.max(this.shakeFrames, 14);
+    this.flash = Math.max(this.flash, 9);
+    this.shakeFrames = Math.max(this.shakeFrames, 12);
+    this.shakeAmp = Math.max(this.shakeAmp, 4);
     this.shakeAmp = Math.max(this.shakeAmp, 6);
   }
   isDialogueBlocking() {
@@ -1135,6 +1205,7 @@ class Game {
         this.player.laserTimers[laserSlot] = p.wait;
       } else if (frame % p.wait !== p.frame) continue;
       const src = p.source === 1 && orbs ? orbs.left : p.source === 2 && orbs ? orbs.right : this.player;
+      if (this.playerBullets.length >= PLAYER_BULLET_CAP) return;
       if (p.sound >= 0) this.audio?.sfx(p.sound);
       const anmIndex = spec.family === 'marisa' ? 1 : 0;
       const rect = this.stageRuntime?.playerAnm?.[anmIndex]?.scriptSprite(p.script);
@@ -1205,7 +1276,7 @@ class Game {
       player: this.player,
       lastEnemyHit: this.frameHomingTarget,
       onClearItems: () => this.attractAllItems(),
-      onText: (label) => this.text(label, this.player.x - 24, this.player.y - 48, 90, '#ffd6e4'),
+      onText: (label) => this.showPlayerBombDeclaration(label),
       onSound: (idx) => this.audio?.sfx(idx),
       onParticles: (effectId, x, y, count, color) => this.spawnEffectParticles(effectId, x, y, count, color),
       onShake: (frames, amp) => {
@@ -1328,18 +1399,23 @@ class Game {
         b.y += b.vy;
       }
       b.age = (b.age || 0) + 1;
+      const canHit = b.state === 'fired' || (b.bulletType === BULLET_TYPE_ACCEL && b.state === 'collided');
       for (const e of this.enemies) {
+        if (!canHit) break;
         const bw = b.sx || b.r * 2;
         const bh = b.sy || b.r * 2;
         const hit = b.sx || e.ecl ? this.overlapsBox(b.x, b.y, bw, bh, e) : dist2(b, e) <= (b.r + e.radius) ** 2;
         if (hit) {
           this.damageEnemy(e, b.damage, 'shot');
-          if (b.bulletType === BULLET_TYPE_ACCEL) this.collideMarisaAStar(b);
-          else if (b.bulletType !== BULLET_TYPE_LASER) {
-            b.dead = true;
-            break;
-          }
+          if (b.bulletType === BULLET_TYPE_ACCEL) this.applyMarisaAStarHit(b);
+          if (b.bulletType !== BULLET_TYPE_LASER) this.collidePlayerBullet(b);
+          if (b.bulletType !== BULLET_TYPE_ACCEL) break;
         }
+      }
+      if (b.state === 'collided') {
+        b.hitAge = (b.hitAge || 0) + 1;
+        this.refreshPlayerBulletRect(b);
+        if ((b.hitAge || 0) >= (b.hitLife || 20)) b.dead = true;
       }
     }
     this.playerBullets = this.playerBullets.filter((b) => !b.dead && b.age < b.life && (b.bulletType === BULLET_TYPE_LASER || this.inArcadeBounds(b.x, b.y, b.rect?.w || b.sx || b.r * 2, b.rect?.h || b.sy || b.r * 2)));
@@ -1351,13 +1427,38 @@ class Game {
     b.y = src.y / 2 + b.vy;
     b.sy = Math.max(1, src.y);
   }
-  collideMarisaAStar(b) {
+  playerBulletAnm(b) {
+    return this.stageRuntime?.playerAnm?.[b.family === 'marisa' ? 1 : 0];
+  }
+  refreshPlayerBulletRect(b) {
+    const anm = this.playerBulletAnm(b);
+    if (!anm) return null;
+    const scriptId = b.hitScript ?? b.script;
+    const frame = b.hitScript != null ? (b.hitAge || 0) : (b.age || 0);
+    const rect = anm.scriptFrame(scriptId, 0, frame, { keepExitSprite: b.hitScript != null });
+    if (rect) {
+      b.rect = rect;
+      b.autoRotate = !!rect.autoRotate;
+    }
+    return rect;
+  }
+  collidePlayerBullet(b) {
     if (b.state === 'fired') {
+      const anm = this.playerBulletAnm(b);
+      const hitScript = b.script + 0x20;
+      b.hitScript = hitScript;
+      b.hitAge = 0;
+      b.hitLife = Math.max(1, anm?.scriptDuration(hitScript) || 20);
+      b.rect = anm?.scriptFrame(hitScript, 0, 0, { keepExitSprite: true }) || b.rect;
+      b.autoRotate = !!b.rect?.autoRotate;
       b.state = 'collided';
-      b.vx /= 8;
-      b.vy /= 8;
       this.spawnEffectParticles(5, b.x, b.y, 1, 0xffffffff);
     }
+    b.vx /= 8;
+    b.vy /= 8;
+  }
+  applyMarisaAStarHit(b) {
+    if ((b.age || 0) % 6 === 0) this.spawnEffectParticles(5, b.x, b.y, 1, 0xffffffff);
     b.damage = Math.max(1, Math.trunc(b.damage / 4));
     const size = b.script === ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_1 ? 32
       : b.script === ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_2 ? 42
@@ -1863,17 +1964,27 @@ class Game {
   spawnBossBreakBurst(enemy, finalBlow = false) {
     const x = enemy.x;
     const y = enemy.y;
-    const rings = finalBlow ? 7 : 4;
-    const sparks = finalBlow ? 34 : 20;
+    const rings = finalBlow ? 7 : 3;
+    const sparks = finalBlow ? 34 : 18;
+    this.effects.push({
+      type: 'bossBreakFlash',
+      x,
+      y,
+      age: 0,
+      life: finalBlow ? 34 : 22,
+      radius: finalBlow ? 34 : 20,
+      expand: finalBlow ? 128 : 70,
+      color: finalBlow ? 'rgba(220, 255, 255, 1)' : 'rgba(255, 246, 216, 1)'
+    });
     for (let i = 0; i < rings; i++) {
       this.effects.push({
         type: 'bossBreakRing',
         x,
         y,
-        age: -i * 5,
-        life: finalBlow ? 86 + i * 4 : 58 + i * 3,
-        radius: 18 + i * 9,
-        expand: finalBlow ? 190 + i * 18 : 112 + i * 12,
+        age: -i * (finalBlow ? 5 : 3),
+        life: finalBlow ? 86 + i * 4 : 42 + i * 3,
+        radius: finalBlow ? 18 + i * 9 : 12 + i * 7,
+        expand: finalBlow ? 190 + i * 18 : 86 + i * 10,
         lineWidth: finalBlow ? 5 - Math.min(i, 3) * 0.45 : 3.2,
         color: finalBlow ? '#d8ffff' : '#fff6b8'
       });
@@ -2126,6 +2237,33 @@ class Renderer {
     ctx.fillText(text, x, y);
     ctx.restore();
   }
+  fitText(text, maxWidth, size = 16, minSize = 10) {
+    const value = String(text || '');
+    const ctx = this.ctx;
+    ctx.save();
+    let fontSize = size;
+    while (fontSize > minSize) {
+      ctx.font = `${fontSize}px "MS Gothic", "Yu Gothic", monospace`;
+      if (ctx.measureText(value).width <= maxWidth) {
+        ctx.restore();
+        return { text: value, size: fontSize };
+      }
+      fontSize--;
+    }
+    ctx.font = `${fontSize}px "MS Gothic", "Yu Gothic", monospace`;
+    if (ctx.measureText(value).width <= maxWidth) {
+      ctx.restore();
+      return { text: value, size: fontSize };
+    }
+    let clipped = value;
+    while (clipped.length > 0 && ctx.measureText(`${clipped}...`).width > maxWidth) clipped = clipped.slice(0, -1);
+    ctx.restore();
+    return { text: clipped ? `${clipped}...` : '', size: fontSize };
+  }
+  fillTextFit(text, x, y, maxWidth, size = 16, color = '#fff', align = 'left', minSize = 10) {
+    const fit = this.fitText(text, maxWidth, size, minSize);
+    if (fit.text) this.fillText(fit.text, x, y, fit.size, color, align);
+  }
   rect(x, y, w, h, color, alpha = 1, stroke = null) {
     const ctx = this.ctx;
     ctx.save();
@@ -2168,7 +2306,8 @@ class Renderer {
   }
   stage() {
     const g = this.game;
-    const fog = g.stageRuntime?.std?.fog(g.stageFrame);
+    const std = g.stageRuntime?.std;
+    const fog = std?.fog(std.frame ?? g.stageFrame);
     const stageBgKey = g.stageAssets?.stageBg || 'stg1bg';
     this.rect(0, 0, 640, 480, '#050509');
     this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, fog?.css || '#090b18');
@@ -2381,8 +2520,9 @@ class Renderer {
   }
   stageStd(std, fog) {
     const ctx = this.ctx;
-    const cam = std.camera(this.game.stageFrame);
-    const camera = this.stageCameraBasis(std.facing?.(this.game.stageFrame));
+    const frame = std.frame ?? this.game.stageFrame;
+    const cam = std.camera(frame);
+    const camera = this.stageCameraBasis(std.facing?.(frame));
     const stageBgKey = this.game.stageAssets?.stageBg || 'stg1bg';
     const img = this.assets[stageBgKey];
     if (!img) return;
@@ -2395,7 +2535,7 @@ class Renderer {
         const obj = std.objects[inst.id];
         if (!obj || obj.zLevel !== zLevel) continue;
         for (const q of obj.quads) {
-          const rect = std.anm.scriptSprite(q.script, 0, this.game.stageFrame, { keepExitSprite: true });
+          const rect = std.anm.scriptSprite(q.script, 0, frame, { keepExitSprite: true });
           if (!rect) continue;
           const vmX = q.x + inst.x - cam.x;
           const vmY = q.y + inst.y - cam.y;
@@ -2467,17 +2607,16 @@ class Renderer {
     const x = PLAYFIELD.x + e.x;
     const y = PLAYFIELD.y + e.y;
     if (e.ecl) {
-      const rect = this.game.stageRuntime.enemyRect(e);
-      if (rect) {
-        const sheet = rect.imageKey === 'enemy2' ? this.game.stageAssets.enemy2 : this.game.stageAssets.enemy;
-        const scale = e.ecl.isBoss ? 1.08 : 1;
-        const rotation = e.ecl.anmRotateWithVelocity && (Math.abs(e.ecl.frameVx) > 0.001 || Math.abs(e.ecl.frameVy) > 0.001)
-          ? Math.atan2(e.ecl.frameVy, e.ecl.frameVx) + Math.PI / 2
-          : 0;
-        if (rotation) this.rotatedSheetSprite(sheet, rect.x, rect.y, rect.w, rect.h, x, y, rect.w * scale, rect.h * scale, rotation);
-        else this.sheetSprite(sheet, rect.x, rect.y, rect.w, rect.h, x, y, rect.w * scale, rect.h * scale, rect.w / 2, rect.h / 2);
-        return;
-      }
+      if (e.ecl.invisible) return;
+      const drawEnemyRect = (rect, scaleMultiplier = 1) => {
+        if (!rect) return false;
+        const rotation = e.ecl.anmRotateWithAngle || rect.autoRotate ? e.ecl.angle : rect.rotation;
+        const imageKey = rect.imageKey === 'enemy2' ? this.game.stageAssets.enemy2 : this.game.stageAssets.enemy;
+        return this.drawAnmFrame(imageKey, rect, x, y, { rotation, scaleMultiplier });
+      };
+      for (const rect of this.game.stageRuntime.enemySlotRects(e, 0, 4)) drawEnemyRect(rect);
+      drawEnemyRect(this.game.stageRuntime.enemyRect(e), e.ecl.isBoss ? 1.08 : 1);
+      for (const rect of this.game.stageRuntime.enemySlotRects(e, 4, 8)) drawEnemyRect(rect);
     }
   }
   optionOrb(spec, x, y, side) {
@@ -2496,8 +2635,9 @@ class Renderer {
       this.playerLaser(b);
       return;
     }
-    if (b.rect) {
-      this.rotatedSheetSprite(b.sheet || 'player00', b.rect.x, b.rect.y, b.rect.w, b.rect.h, x, y, b.rect.w, b.rect.h, rotation);
+    const rect = this.game.refreshPlayerBulletRect?.(b) || b.rect;
+    if (rect) {
+      this.rotatedSheetSprite(b.sheet || 'player00', rect.x, rect.y, rect.w, rect.h, x, y, rect.w, rect.h, rotation);
     }
   }
   playerLaser(b) {
@@ -2558,6 +2698,22 @@ class Renderer {
     if (effect.type === 'anmEffect') {
       const frame = this.game.stageRuntime?.effectFrame?.(effect.effectId, effect.age, effect.randomIndex || 0, effect.color);
       if (frame && this.drawAnmFrame(frame.imageKey, frame, x, y, { color: effect.color, alpha: Math.max(0, 1 - Math.max(0, t - 0.92) / 0.08) })) return;
+    } else if (effect.type === 'bossBreakFlash') {
+      const ctx = this.ctx;
+      const radius = effect.radius + effect.expand * (1 - Math.pow(1 - clamp(t, 0, 1), 2));
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.max(0, 1 - t) * 0.72;
+      ctx.fillStyle = effect.color || 'rgba(255,255,255,1)';
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 0.42, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha *= 0.45;
+      ctx.fillStyle = 'rgba(255, 246, 216, 1)';
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, TAU);
+      ctx.fill();
+      ctx.restore();
     } else if (effect.type === 'bossBreakRing') {
       const ctx = this.ctx;
       const ease = 1 - Math.pow(1 - clamp(t, 0, 1), 3);
@@ -2767,15 +2923,45 @@ class Renderer {
     if (!ui || ui.state === 0) return;
     const alpha = ui.opacity / 255;
     const ctx = this.ctx;
+    const leftX = PLAYFIELD.x + 8;
+    const rightX = PLAYFIELD.right - 8;
+    const topY = PLAYFIELD.y + 2;
+    const barX = PLAYFIELD.x + 7;
+    const barY = PLAYFIELD.y + 38;
+    const barW = PLAYFIELD.width - 14;
+    const barH = 5;
     ctx.save();
     ctx.globalAlpha = alpha;
-    this.fillText('Enemy', PLAYFIELD.x + 4, PLAYFIELD.y + 3, 13, '#fff37d');
-    this.fillText(String(ui.lives), PLAYFIELD.x + 64, PLAYFIELD.y + 2, 16, '#fff37d');
-    this.rect(PLAYFIELD.x + 92, PLAYFIELD.y + 8, 288, 5, '#181824', 0.95);
-    this.rect(PLAYFIELD.x + 92, PLAYFIELD.y + 8, 288 * ui.barDisplay, 5, '#3d57ff', 0.9);
-    this.fillText(String(Math.min(99, Math.max(0, ui.timerSeconds))).padStart(2, '0'), PLAYFIELD.x + 356, PLAYFIELD.y + 0, 20, ui.timerSeconds < 10 ? '#ff8080' : '#c7b5ff');
-    const title = ui.spellName || ui.bossName;
-    if (title) this.fillText(title, PLAYFIELD.x + 174 - title.length * 3.4, PLAYFIELD.y + 16, 14, '#dce3ff');
+    this.fillTextFit(ui.bossName, leftX, topY + 3, 156, 15, '#f5d7ff', 'left', 11);
+    this.fillText(`+${Math.min(99, Math.max(0, ui.lives | 0))}`, leftX, topY + 22, 13, '#fff37d');
+    const marks = Math.min(8, Math.max(0, ui.lives | 0));
+    for (let i = 0; i < marks; i++) {
+      const x = leftX + 28 + i * 9;
+      ctx.fillStyle = 'rgba(255, 236, 132, 0.72)';
+      ctx.fillRect(x, topY + 27, 6, 3);
+      ctx.strokeStyle = 'rgba(75, 35, 58, 0.75)';
+      ctx.strokeRect(x - 0.5, topY + 26.5, 7, 4);
+    }
+    const timerText = String(Math.min(99, Math.max(0, ui.timerSeconds | 0))).padStart(2, '0');
+    this.fillText(timerText, rightX, topY, 24, ui.timerSeconds < 10 ? '#ff8080' : '#d8d5ff', 'right');
+    if (ui.spellName) {
+      const spellRight = rightX - 42;
+      const spellLeftLimit = leftX + 164;
+      this.fillTextFit(ui.spellName, spellRight, topY + 8, Math.max(60, spellRight - spellLeftLimit), 16, '#fff0f8', 'right', 10);
+    }
+    ctx.fillStyle = 'rgba(16, 10, 24, 0.88)';
+    ctx.fillRect(barX, barY, barW, barH);
+    const hpW = Math.max(0, barW * ui.barDisplay);
+    if (hpW > 0) {
+      const grad = ctx.createLinearGradient(barX, barY, barX + barW, barY);
+      grad.addColorStop(0, '#ffe0e6');
+      grad.addColorStop(0.5, '#ff8aa4');
+      grad.addColorStop(1, '#8ba6ff');
+      ctx.fillStyle = grad;
+      ctx.fillRect(barX, barY, hpW, barH);
+    }
+    ctx.strokeStyle = 'rgba(255, 245, 255, 0.72)';
+    ctx.strokeRect(barX - 0.5, barY - 0.5, barW + 1, barH + 1);
     ctx.restore();
   }
   hudStar(type, x, y) {
@@ -2786,6 +2972,9 @@ class Renderer {
     this.stageIntroOverlay();
     this.itemGetBorderLine();
     this.fullPowerModeOverlay();
+    this.spellcardDeclarationOverlay();
+    this.playerBombDeclarationOverlay();
+    this.spellcardBonusOverlay();
     this.stageTransitionOverlay();
     if (g.dialogue?.active) this.dialogue(g.dialogue);
     if (g.phase === 'paused') {
@@ -2799,19 +2988,137 @@ class Renderer {
       this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', 0.42);
       this.fillText('Game Over', PLAYFIELD.x + 122, PLAYFIELD.y + 192, 26, '#ff6b84');
     }
-    if (g.banner > 0) {
-      const name = g.bossUi?.spellName || '';
-      if (name) {
-        this.ctx.globalAlpha = Math.min(1, g.banner / 60);
-        this.fillText(name, PLAYFIELD.x + 40, PLAYFIELD.y + 76, 18, '#dce3ff');
-        this.ctx.globalAlpha = 1;
-      }
-    }
-    if (g.bgmBanner > 0 && g.bgmLabel) {
+    if (g.bgmBanner > 0 && g.bgmLabel && g.stageIntro <= 0) {
       this.ctx.globalAlpha = Math.min(1, g.bgmBanner / 50);
       this.fillText(`BGM ${g.bgmLabel}`, PLAYFIELD.x + 18, PLAYFIELD.y + 398, 13, '#bff8ff');
       this.ctx.globalAlpha = 1;
     }
+  }
+  spellcardDeclarationOverlay() {
+    const d = this.game.spellcardDeclaration;
+    if (!d) return;
+    const frame = Math.max(0, d.duration - d.timer);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.clip();
+    if (frame < d.portraitDuration) {
+      const moveT = clamp(frame / 30, 0, 1);
+      const moveEase = 1 - (1 - moveT) * (1 - moveT);
+      const x = 480 + (320 - 480) * moveEase;
+      const y = 240;
+      const exitFrame = Math.max(0, frame - 90);
+      const fade = 1 - clamp(exitFrame / 30, 0, 1);
+      const scale = 1 + exitFrame * (1 / 15);
+      const img = this.assets[d.faceKey] || this.assets.face03a;
+      if (img) {
+        const fullWidthFace = d.faceKey === 'face10a' || d.faceKey === 'face10b';
+        const sw = fullWidthFace ? Math.min(256, img.width) : Math.min(128, img.width);
+        const sh = Math.min(256, img.height);
+        let sx = fullWidthFace ? 0 : (d.sprite % 2) * 128;
+        if (sx + sw > img.width) sx = 0;
+        ctx.save();
+        ctx.globalAlpha = (224 / 255) * fade;
+        ctx.drawImage(img, sx, 0, sw, sh, x - sw * scale / 2, y - sh * scale / 2, sw * scale, sh * scale);
+        ctx.restore();
+      }
+    }
+    if (frame < d.duration && d.spellName) {
+      const fadeIn = clamp(frame / 30, 0, 1);
+      const scale = frame < 30 ? 3 - 2 * fadeIn : 1;
+      const moveT = clamp((frame - 100) / 30, 0, 1);
+      const moveEase = 1 - (1 - moveT) * (1 - moveT);
+      const x = 256;
+      const y = 312 + (40 - 312) * moveEase;
+      const text = d.spellName;
+      ctx.save();
+      ctx.font = '15px "MS Gothic", "Yu Gothic", monospace';
+      const textWidth = ctx.measureText(text).width;
+      const barW = clamp(textWidth + 42, 168, PLAYFIELD.width - 52);
+      ctx.globalAlpha = fadeIn;
+      this.sheetSprite('front', 97, 224, 14, 16, x, y + 8, barW, 16, 7, 8, fadeIn * 0.92);
+      ctx.translate(x, y + 8);
+      ctx.scale(scale, scale);
+      ctx.font = '15px "MS Gothic", "Yu Gothic", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000';
+      ctx.fillStyle = '#fff0f0';
+      ctx.strokeText(text, 0, 0);
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  playerBombDeclarationOverlay() {
+    const d = this.game.playerBombDeclaration;
+    if (!d) return;
+    const frame = Math.max(0, d.duration - d.timer);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.clip();
+    if (frame < d.portraitDuration) {
+      const moveT = clamp(frame / 30, 0, 1);
+      const moveEase = 1 - (1 - moveT) * (1 - moveT);
+      const x = -32 + (160 + 32) * moveEase;
+      const y = 272;
+      const exitFrame = Math.max(0, frame - 90);
+      const fade = 1 - clamp(exitFrame / 30, 0, 1);
+      const scale = 1 + exitFrame * (1 / 15);
+      const img = this.assets[d.faceKey] || this.assets.face00a;
+      if (img) {
+        const sw = Math.min(128, img.width);
+        const sh = Math.min(256, img.height);
+        ctx.save();
+        ctx.globalAlpha = (224 / 255) * fade;
+        ctx.drawImage(img, 0, 0, sw, sh, x - sw * scale / 2, y - sh * scale / 2, sw * scale, sh * scale);
+        ctx.restore();
+      }
+    }
+    if (frame < d.duration && d.spellName) {
+      const fadeIn = clamp(frame / 30, 0, 1);
+      const scale = frame < 30 ? 3 - 2 * fadeIn : 1;
+      const moveT = clamp((frame - 100) / 30, 0, 1);
+      const moveEase = 1 - (1 - moveT) * (1 - moveT);
+      const x = 192;
+      const y = 344 + (440 - 344) * moveEase;
+      const text = d.spellName;
+      ctx.save();
+      ctx.font = '15px "MS Gothic", "Yu Gothic", monospace';
+      const textWidth = ctx.measureText(text).width;
+      const barW = clamp(textWidth + 42, 168, PLAYFIELD.width - 52);
+      ctx.globalAlpha = fadeIn;
+      this.sheetSprite('front', 97, 224, 14, 16, x, y + 8, barW, 16, 7, 8, fadeIn * 0.92);
+      ctx.translate(x, y + 8);
+      ctx.scale(scale, scale);
+      ctx.font = '15px "MS Gothic", "Yu Gothic", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000';
+      ctx.fillStyle = '#f0f0ff';
+      ctx.strokeText(text, 0, 0);
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  spellcardBonusOverlay() {
+    const popup = this.game.spellcardBonusPopup;
+    if (!popup) return;
+    const alpha = Math.min(1, popup.timer / 24);
+    const centerX = PLAYFIELD.x + PLAYFIELD.width / 2;
+    const y = PLAYFIELD.y + 64;
+    this.ctx.save();
+    this.ctx.globalAlpha = alpha;
+    this.fillText(`BONUS ${String(popup.bonus).padStart(8, ' ')}`, centerX, y - 42, 20, '#f4ff70', 'center');
+    this.fillText('Spell Card Bonus!', centerX, y, 20, '#e00018', 'center');
+    this.fillText(`+${popup.bonus}`, centerX, y + 24, 36, '#ff8088', 'center');
+    this.ctx.restore();
   }
   fullPowerModeOverlay() {
     const timer = this.game.fullPowerMode || 0;
@@ -2879,44 +3186,22 @@ class Renderer {
     const title = g.stageMeta.title || {};
     const total = g.stageIntroTotalFrames();
     const elapsed = total - g.stageIntro;
-    const primary = title.primary || `第${g.stageMeta.stageNumber}关`;
     const original = title.original || `STAGE ${g.stageMeta.stageNumber}`;
-    const japanese = title.japanese || '';
-    const english = title.english || '';
-    const fadeIn = Math.min(1, elapsed / 40);
-    const fadeOut = Math.min(1, g.stageIntro / 50);
+    const stageName = title.stageName || [title.japanese, title.english].filter(Boolean).join('　〜 ');
+    const songName = g.stageMeta.musicLabels?.[0] || '';
+    const fadeIn = Math.min(1, elapsed / 24);
+    const fadeOut = Math.min(1, g.stageIntro / 42);
     const alpha = Math.min(fadeIn, fadeOut);
     const centerX = PLAYFIELD.x + PLAYFIELD.width / 2;
-    const centerY = PLAYFIELD.y + 154;
-    const sweep = (elapsed % 180) / 180;
+    const stageY = PLAYFIELD.y + 180;
     ctx.save();
     ctx.beginPath();
     ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
     ctx.clip();
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < 7; i++) {
-      const yy = centerY - 50 + i * 16 + Math.sin((elapsed + i * 9) * 0.07) * 3;
-      const left = PLAYFIELD.x + ((sweep * 520 + i * 37) % 520) - 120;
-      const grad = ctx.createLinearGradient(left, yy, left + 160, yy);
-      grad.addColorStop(0, 'rgba(128,240,255,0)');
-      grad.addColorStop(0.5, 'rgba(196,255,255,0.32)');
-      grad.addColorStop(1, 'rgba(128,240,255,0)');
-      ctx.globalAlpha = alpha * 0.7;
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(left, yy);
-      ctx.lineTo(left + 160, yy);
-      ctx.stroke();
-    }
     ctx.globalAlpha = alpha;
-    ctx.globalCompositeOperation = 'source-over';
-    this.rect(PLAYFIELD.x + 42, centerY - 52, PLAYFIELD.width - 84, 1, '#dffcff', 0.55);
-    this.rect(PLAYFIELD.x + 42, centerY + 58, PLAYFIELD.width - 84, 1, '#dffcff', 0.35);
-    this.fillText(original, centerX, centerY - 30, 14, '#bff8ff', 'center');
-    this.fillText(primary, centerX, centerY, 25, '#ffffff', 'center');
-    if (japanese) this.fillText(japanese, centerX, centerY + 30, 19, '#ffd7df', 'center');
-    if (english) this.fillText(english, centerX, centerY + 54, 15, '#cfe7ff', 'center');
+    this.fillText(original, centerX, stageY, 25, '#f6ff64', 'center');
+    if (stageName) this.fillTextFit(stageName, centerX, stageY + 34, PLAYFIELD.width - 64, 19, '#dce6ff', 'center', 13);
+    if (songName) this.fillTextFit(`♪${songName}`, PLAYFIELD.right - 12, PLAYFIELD.bottom - 22, PLAYFIELD.width - 36, 15, '#f6efff', 'right', 11);
     ctx.restore();
   }
   itemGetBorderLine() {
@@ -3038,6 +3323,17 @@ async function main() {
         spellIndex: game.bossUi.spellIndex,
         timer: game.bossUi.timerSeconds
       },
+      spellDeclaration: game.spellcardDeclaration ? {
+        timer: game.spellcardDeclaration.timer,
+        spellName: game.spellcardDeclaration.spellName,
+        sprite: game.spellcardDeclaration.sprite,
+        faceKey: game.spellcardDeclaration.faceKey
+      } : null,
+      playerBombDeclaration: game.playerBombDeclaration ? {
+        timer: game.playerBombDeclaration.timer,
+        spellName: game.playerBombDeclaration.spellName,
+        faceKey: game.playerBombDeclaration.faceKey
+      } : null,
       enemies: game.enemies.map((e) => ({
         id: e.id,
         subId: e.ecl?.subId,

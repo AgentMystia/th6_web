@@ -1,98 +1,127 @@
 # AGENTS.md
 
-This file defines the working rules for agents and contributors in this repository.
+Rules for AI agents and contributors working on this repository.
 
-## Project Goal
+## Mission
 
-- Recreate *Touhou 6: Embodiment of Scarlet Devil* in the browser with high fidelity.
-- Treat the original game data, extracted resources, and local source references as the primary source of truth.
-- Keep modern quality-of-life additions explicit and limited. Current accepted exceptions include focus hitbox display and non-original convenience/debug tooling.
+Recreate Touhou Koumakyou ~ The Embodiment of Scarlet Devil / TH06 on the Web.
+
+Default rule: reproduce the original game exactly.
+
+Approved modernizations are the only intentional deviations. Do not simplify, rebalance, redesign, reinterpret, modernize, or approximate original behavior unless it is explicitly allowed here or requested by the user.
+
+## Authority Order
+
+When sources conflict, use this priority order:
+
+1. Current user instruction.
+2. Approved Modernizations in this file.
+3. Original TH06 reference corpus in `reference/`: original code, decompiled code, extracted data, unpacked files, assets, replay/golden evidence, and related local reference material.
+4. Existing project implementation.
+5. Internet or external documentation, for cross-validation only.
+
+`reference/` is read-only and local-only. Do not modify, commit, ship, or expose it unless the user explicitly asks.
+
+## Approved Modernizations
+
+Only these intentional differences from the original game are currently approved:
+
+- Player hitbox display: the player hitbox may be shown visually. The indicator must follow the real collision hitbox exactly and must not change collision behavior.
+- Non-full-power Point of Collection: PoC may work below full power. Only this availability condition changes. Item value, item movement, scoring, drops, collection behavior, and surrounding systems must remain original unless explicitly changed by the user.
+- Dev/debug tooling: allowed only as tooling. It must not change shipped gameplay behavior.
+
+No other modernization is approved by default.
+
+## Fidelity Rules
+
+For gameplay, stages, UI, visuals, and audio, match the original for:
+
+- frame timing, RNG, coordinates, angles, speed, acceleration
+- spawn/despawn timing, movement, collision, hitboxes, damage
+- enemy scripts, boss phases, spell behavior, drops, items, scoring
+- player movement, shots, bombs, death, invulnerability, resources
+- dialogue, UI, effects, animation, layering, blending, sound timing
+
+Approximation is allowed only when exact reproduction is impossible because the reference is missing, contradictory, or the Web runtime cannot reproduce the original behavior. When approximating, document the mismatch, cause, chosen approximation, and future path to improve it.
+
+Current implementation is not proof of correctness. The original reference wins unless an approved modernization applies.
+
+## Work Process
+
+Before editing:
+
+- Inspect the relevant current code.
+- Inspect the matching original reference.
+- Identify constants, formulas, state transitions, assets, and frame timing.
+- Plan the smallest change that improves fidelity.
+
+While editing:
+
+- Prefer original data/parsers over hand-written approximate scripts.
+- Keep changes minimal, scoped, and reviewable.
+- Do not perform unrelated refactors.
+- Do not change public APIs, file layout, asset formats, or stage scope unless required for fidelity.
+- Do not regress earlier verified stages.
+
+After editing:
+
+- Compare against `reference/` or available golden evidence.
+- Run the strongest relevant validation available.
+- Remove temporary logs, debug UI, generated artifacts, and throwaway files.
 
 ## Runtime Boundary
 
-- Runtime files must stay limited to what the browser game needs:
-  - `index.html`
-  - `src/`
-  - `assets/th06-img/`
-  - `assets/audio/`
-  - `assets/sfx/`
-  - other files explicitly required by the deployed page
-- Browser code must not read from `reference/`, `tests/`, `scripts/`, `docs/`, or `node_modules/`.
-- `dist/` is generated output. Do not edit it by hand.
-- `reference/` is local-only material for audits, extraction, and parity checks.
+The shipped browser game may depend only on runtime files such as:
 
-## Development Standard
+- `index.html`
+- `src/`
+- `assets/th06-img/`
+- `assets/audio/`
+- `assets/sfx/`
+- other files explicitly required by the deployed page
 
-- Prefer source-derived behavior over approximate hand-written behavior.
-- Before changing stage logic, bullets, drops, hitboxes, scoring, spell behavior, backgrounds, or dialogue, check the relevant original reference in `reference/`.
-- Do not regress Stage 1 or Stage 2 while implementing later stages unless the change is confirmed against original behavior.
-- Preserve static deployment: `index.html` must continue to work when opened directly from `file://`.
-- Keep rendering, timing, collision, RNG, and resource-drop changes scoped and testable.
-- Keep UI text and dialogue in Chinese for the game surface unless a specific feature requires otherwise.
-- Do not add large new assets unless they are required at runtime and are included intentionally.
-- Do not commit secrets, tokens, local credentials, browser profiles, test artifacts, or original reference corpora.
+Browser/runtime code must not read from `reference/`, `tests/`, `scripts/`, `docs/`, or `node_modules/`.
 
-## Testing Standard
+`dist/` is generated output. Do not edit it manually.
 
-Run the strongest practical validation before publishing or syncing meaningful gameplay changes:
+Keep static deployment working: `index.html` should still run when opened directly.
 
-```sh
-npm run check
-npm test
-node scripts/audit-th06-stages.mjs
-npx playwright test -c playwright.config.mjs --reporter=line
-npm run prepare-pages
-```
+## Validation
 
-For small documentation-only changes, at minimum run:
+Use the strongest practical subset available for the change:
 
-```sh
-npm run check
-```
+- `npm run check`
+- `npm test`
+- `node scripts/audit-th06-stages.mjs`
+- `npx playwright test -c playwright.config.mjs --reporter=line`
+- `npm run prepare-pages`
 
-If any validation cannot be run, record that clearly in the final handoff.
+If a command is unavailable, irrelevant, or fails for reasons unrelated to the task, state that clearly in the handoff.
 
-## Git And Sync Standard
+For documentation-only changes, minimal validation is acceptable.
 
-- The local workspace is the development source. GitHub is the publish/sync remote.
-- Work on `main` unless the user asks for a branch.
-- Before editing, check the worktree:
+## Repo Hygiene
 
-```sh
-git status -sb
-```
+Never commit or ship:
 
-- Never revert user changes or unrelated local changes without explicit permission.
-- After completing a coherent change:
-  - inspect the diff;
-  - run the relevant validation;
-  - commit with a clear, scoped message;
-  - push to `origin/main`.
-- Use the standard GitHub CLI/authenticated git flow already configured in the environment.
-- Keep commits focused. Do not mix runtime fixes, asset replacement, and documentation churn unless they are part of the same requested change.
-- Remote sync must not include files that are not needed for the published game.
+- `reference/`
+- secrets, tokens, credentials, browser profiles
+- caches, generated logs, screenshots, `test-results/`
+- throwaway debug scripts or temporary development artifacts
 
-## Publish Standard
+New tests, replay tools, audit tools, or golden comparison tools may be added only when they are intentional project files, not temporary artifacts.
 
-- Build Pages output with:
+Never revert user changes or unrelated local changes.
 
-```sh
-npm run prepare-pages
-```
+Keep diffs focused. Commit or push only when the task or user explicitly asks for sync/publish.
 
-- Confirm that the generated package contains runtime files only.
-- Do not deploy or commit:
-  - `reference/`
-  - `tests/`
-  - `scripts/` unless explicitly required by the runtime or release process
-  - `docs/`
-  - `node_modules/`
-  - `test-results/`
-  - local caches or credentials
+## Handoff
 
-## Handoff Standard
+Final handoff must state:
 
-- Summaries should be concise and concrete.
-- Always mention validation that was run.
-- If a change affects gameplay fidelity, identify the original-reference basis or the remaining uncertainty.
-- If a task is not fully complete, state the remaining gap directly.
+- what changed
+- which files changed
+- original-reference basis or remaining uncertainty
+- whether the result is exact or approximate
+- validation run, or why validation was not run
+- remaining bugs or fidelity gaps

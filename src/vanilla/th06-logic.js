@@ -17,8 +17,9 @@
     title: {
       primary: '第一关',
       original: 'STAGE 1',
-      japanese: '梦幻夜行绘卷',
-      english: '神秘飞行者'
+      japanese: '夢幻夜行絵巻',
+      english: 'Mystic Flier',
+      stageName: '夢幻夜行絵巻　〜 Mystic Flier'
     },
     presentation: {
       introFrames: 240,
@@ -26,13 +27,14 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '露米娅',
+    bossDisplayName: 'Rumia',
     spells: [
       '月符「月光」',
       '夜符「夜雀」',
       '暗符「境界线」'
     ],
     music: ['stage1', 'boss1'],
-    musicLabels: ['如鬼灯般的红色之魂', '妖魔夜行'],
+    musicLabels: ['ほおずきみたいに紅い魂', '妖魔夜行'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦'
   };
 
@@ -41,8 +43,9 @@
     title: {
       primary: '第二关',
       original: 'STAGE 2',
-      japanese: '湖上的魔精',
-      english: '水之魔术师'
+      japanese: '湖上の魔精',
+      english: 'Water Magus',
+      stageName: '湖上の魔精　〜 Water Magus'
     },
     presentation: {
       introFrames: 240,
@@ -50,7 +53,9 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '琪露诺',
+    bossDisplayName: 'Cirno',
     midbossName: '大妖精',
+    midbossDisplayName: 'Daiyousei',
     bossFaces: ['face05a', 'face05a'],
     spells: [
       '冰符「冰柱坠落」',
@@ -59,7 +64,7 @@
       '雪符「钻石风暴」'
     ],
     music: ['stage2', 'boss2'],
-    musicLabels: ['露奈特精灵', '活泼的纯情小姑娘'],
+    musicLabels: ['ルーネイトエルフ', 'おてんば恋娘'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦'
   };
 
@@ -68,8 +73,9 @@
     title: {
       primary: '第三关',
       original: 'STAGE 3',
-      japanese: '红色之境',
-      english: 'Scarlet Land'
+      japanese: '紅色の境',
+      english: 'Scarlet Land',
+      stageName: '紅色の境　〜 Scarlet Land'
     },
     presentation: {
       introFrames: 240,
@@ -77,7 +83,9 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '红美铃',
+    bossDisplayName: 'Hong Meiling',
     midbossName: '红美铃',
+    midbossDisplayName: 'Hong Meiling',
     bossFaces: ['face06a', 'face06a', 'face06b', 'face06b'],
     spells: [
       '华符「芳华绚烂」',
@@ -89,7 +97,7 @@
       '彩符「极彩台风」'
     ],
     music: ['stage3', 'boss3'],
-    musicLabels: ['上海红茶馆 ～ Chinese Tea', '明治十七年的上海爱丽丝'],
+    musicLabels: ['上海紅茶館　〜 Chinese Tea', '明治十七年の上海アリス'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦/中日对照'
   };
 
@@ -98,8 +106,9 @@
     title: {
       primary: '第四关',
       original: 'STAGE 4',
-      japanese: '漆黑之馆',
-      english: 'Save the mind.'
+      japanese: '暗闇の館',
+      english: 'Save the mind.',
+      stageName: '暗闇の館　〜 Save the mind.'
     },
     presentation: {
       introFrames: 240,
@@ -107,7 +116,9 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '帕秋莉·诺蕾姬',
+    bossDisplayName: 'Patchouli Knowledge',
     midbossName: '小恶魔',
+    midbossDisplayName: 'Koakuma',
     bossFaces: ['face08a', 'face08a', 'face08b', 'face08b'],
     spells: [
       '火符「Agni Shine」',
@@ -130,7 +141,7 @@
       '土&金符「Emerald Megalith」'
     ],
     music: ['stage4', 'boss4'],
-    musicLabels: ['伏瓦鲁魔法图书馆', 'Locked Girl ～ 少女密室'],
+    musicLabels: ['ヴワル魔法図書館', 'ラクトガール　〜 少女密室'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦/中日对照'
   };
 
@@ -139,8 +150,9 @@
     title: {
       primary: '第五关',
       original: 'STAGE 5',
-      japanese: '红月下潇洒的从者',
-      english: 'Maid and Pocket Watch of Blood'
+      japanese: '紅い月に瀟洒な従者を',
+      english: '',
+      stageName: '紅い月に瀟洒な従者を'
     },
     presentation: {
       introFrames: 240,
@@ -148,7 +160,9 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '十六夜咲夜',
+    bossDisplayName: 'Sakuya Izayoi',
     midbossName: '十六夜咲夜',
+    midbossDisplayName: 'Sakuya Izayoi',
     bossFaces: ['face09a', 'face09a', 'face09b', 'face09b'],
     spells: [
       '奇术「Misdirection」',
@@ -161,7 +175,7 @@
       '女仆秘技「杀人玩偶」'
     ],
     music: ['stage5', 'boss5'],
-    musicLabels: ['女仆与血之怀表', '月时计 ～ Luna Dial'],
+    musicLabels: ['メイドと血の懐中時計', '月時計　〜 ルナ・ダイアル'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦/中日对照'
   };
 
@@ -170,8 +184,9 @@
     title: {
       primary: '最终关',
       original: 'FINAL STAGE',
-      japanese: '乐园洒下血雨',
-      english: 'Scarlet Gensokyo'
+      japanese: 'エリュシオンに血の雨',
+      english: '',
+      stageName: 'エリュシオンに血の雨'
     },
     presentation: {
       introFrames: 240,
@@ -179,7 +194,9 @@
       itemBorderLine: { start: 58, end: 174 }
     },
     bossName: '蕾米莉亚·斯卡蕾特',
+    bossDisplayName: 'Remilia Scarlet',
     midbossName: '十六夜咲夜',
+    midbossDisplayName: 'Sakuya Izayoi',
     bossFaces: ['face10a', 'face10a', 'face10b', 'face10b'],
     midbossFaces: ['face09a', 'face09a', 'face09b', 'face09b'],
     spells: [
@@ -196,7 +213,7 @@
       '「红色的幻想乡」'
     ],
     music: ['stage6', 'boss6'],
-    musicLabels: ['特佩斯的年幼末裔', '献给已逝公主的七重奏'],
+    musicLabels: ['ツェペシュの幼き末裔', '亡き王女の為のセプテット'],
     dialogueSource: 'https://thwiki.cc/游戏对话:东方红魔乡/博丽灵梦/中日对照'
   };
 
@@ -825,7 +842,7 @@
     if (typeof rng !== 'function') throw new Error('ReimuA Dream Seal requires the original game RNG stream');
     return {
       type: 'reimuA',
-      label: 'Dream Seal',
+      label: 'Spirit Sign "Dream Seal"',
       frame: 0,
       duration: 300,
       invuln: 360,
@@ -848,7 +865,7 @@
   function createReimuBBomb(player) {
     return {
       type: 'reimuB',
-      label: 'Evil Sealing Circle',
+      label: 'Dream Sign "Evil-Sealing Circle"',
       frame: 0,
       duration: 140,
       invuln: 200,
@@ -865,7 +882,7 @@
   function createMarisaABomb(player) {
     return {
       type: 'marisaA',
-      label: 'Stardust Reverie',
+      label: 'Magic Sign "Stardust Reverie"',
       frame: 0,
       duration: 250,
       invuln: 300,
@@ -886,7 +903,7 @@
   function createMarisaBBomb(player) {
     return {
       type: 'marisaB',
-      label: 'Master Spark',
+      label: 'Love Sign "Master Spark"',
       frame: 0,
       duration: 300,
       invuln: 360,
@@ -903,7 +920,8 @@
     if (!bomb.initialized) {
       bomb.initialized = true;
       ctx.onClearItems?.();
-      ctx.onText?.('Dream Seal');
+      ctx.onText?.(bomb.label);
+      ctx.onSound?.(14);
       ctx.onParticles?.(12, ctx.player.x, ctx.player.y, 1, 0xff40ffff);
       ctx.onCancelBox?.(ctx.player.x, ctx.player.y, 256, 256);
     }
@@ -943,7 +961,7 @@
           ctx.onDamageBox?.(p.x, p.y, 256, 256, 200, 'bombExplosion');
           ctx.onCancelBox?.(p.x, p.y, 256, 256);
           p.state = 2;
-          p.stateFrame = 2;
+          p.stateFrame = 0;
           ctx.onSound?.(15);
           ctx.onShake?.(16, 8);
         }
@@ -967,6 +985,7 @@
       bomb.initialized = true;
       ctx.onClearItems?.();
       ctx.onText?.(bomb.label);
+      ctx.onSound?.(14);
       ctx.onSound?.(6);
       ctx.onShake?.(60, 2);
     }
@@ -990,6 +1009,7 @@
       bomb.initialized = true;
       ctx.onClearItems?.();
       ctx.onText?.(bomb.label);
+      ctx.onSound?.(14);
       ctx.onSound?.(6);
       ctx.onShake?.(120, 4);
     } else {
@@ -1011,6 +1031,7 @@
       bomb.initialized = true;
       ctx.onClearItems?.();
       ctx.onText?.(bomb.label);
+      ctx.onSound?.(14);
       ctx.onSound?.(19);
     } else {
       if (bomb.frame === 60) ctx.onShake?.(60, 1);

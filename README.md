@@ -55,6 +55,10 @@ npm run prepare-pages
 
 #### 2026-05-13
 
+- 更新 AGENTS.md，明确原作优先级、只允许已批准现代化、参考资料边界和上线校验流程。
+- 复刻原作风格的关卡 Intro、Boss 符卡宣言、Boss 血条和符卡击破奖励/爆破反馈。
+- 修复 ReimuA / ReimuB / MarisaA / MarisaB 自机 Bomb 的原作参数、宣言音效、伤害/消弹节奏与主要视觉表现。
+- 修复 MarisaA 绿色副弹命中后停留减速导致的异常帧伤。
 - 替换 Stage 3-6 BGM 为 THWiki 对应 MP3。
 - 收紧敌弹原作行为：出弹状态、出弹期间碰撞、初速度、整数 RNG。
 - 增加浏览器测试钩子和 Stage 6 咲夜贴图回归检查。
@@ -147,6 +151,10 @@ npm run prepare-pages
 
 #### 2026-05-13
 
+- Updated AGENTS.md to define original-first authority, approved modernizations, reference corpus boundaries, and release validation.
+- Recreated original-style stage intro, boss spell declaration, boss life bar, and spell capture/break feedback.
+- Fixed ReimuA / ReimuB / MarisaA / MarisaB bomb source parameters, declaration sound, damage/cancel cadence, and primary visuals.
+- Fixed MarisaA green missiles lingering and slowing on hit, which caused excessive frame damage.
 - Replaced Stage 3-6 BGM with the matching THWiki MP3 files.
 - Tightened original enemy bullet behavior: spawn state, collision timing, burst speed, integer RNG.
 - Added browser test hook and Stage 6 Sakuya spritesheet regression test.
