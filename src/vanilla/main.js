@@ -23,7 +23,10 @@ const PLAYER_DEATH_ANIM_FRAMES = 30;
 const PLAYER_SPAWN_ANIM_FRAMES = 30;
 const PLAYER_DEATHBOMB_WINDOW_FRAMES = 6;
 const ITEM_GET_BORDER_Y = 128;
-const STAGE_TRANSITION_FRAMES = 150;
+const STAGE_TRANSITION_FRAMES = 240;
+const STAGE_TRANSITION_FLY_FRAMES = 120;
+const STAGE_ENTRY_FADE_FRAMES = 45;
+const FULL_POWER_MODE_FRAMES = 120;
 const ANM_SCRIPT_PLAYER_BULLET = 64;
 const ANM_SCRIPT_PLAYER_REIMU_A_ORB_BULLET = 65;
 const ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_1 = 65;
@@ -591,6 +594,8 @@ class Game {
     this.bgmLabel = '';
     this.flash = 0;
     this.banner = 0;
+    this.fullPowerMode = 0;
+    this.stageEntryFade = 0;
     this.stageIntro = this.stageIntroTotalFrames();
     this.stageRuntime.reset();
   }
@@ -625,6 +630,7 @@ class Game {
   startNextStage() {
     this.loadStage(this.currentStageNumber + 1);
     this.resetStageState();
+    this.stageEntryFade = STAGE_ENTRY_FADE_FRAMES;
     this.phase = 'playing';
     this.startStageBgm();
   }
@@ -714,6 +720,8 @@ class Game {
     window.__touhouShotType = this.selected;
     this.flash = Math.max(0, this.flash - 1);
     this.banner = Math.max(0, this.banner - 1);
+    this.fullPowerMode = Math.max(0, this.fullPowerMode - 1);
+    this.stageEntryFade = Math.max(0, this.stageEntryFade - 1);
     this.stageIntro = Math.max(0, this.stageIntro - 1);
     this.stageRuntime.update(this);
     this.updateDialogue(input);
@@ -739,7 +747,9 @@ class Game {
     const boss = this.enemies.find((e) => e.kind === 'boss' || e.ecl?.isBoss);
     const clearFrame = this.stageMeta.presentation.clearAfterFrame;
     if (clearFrame == null) throw new Error(`Missing original Stage ${this.currentStageNumber} clear frame metadata`);
-    if (this.stageFrame > clearFrame && !boss && this.enemies.length === 0) this.clear();
+    const timelineComplete = this.stageRuntime?.isTimelineComplete?.()
+      ?? ((this.stageRuntime?.timelineIndex ?? 0) >= (this.stageRuntime?.ecl?.timeline?.length ?? 0));
+    if (this.stageFrame > clearFrame && timelineComplete && !boss && this.enemies.length === 0) this.clear();
   }
   updateStageTransition(input) {
     const tr = this.stageTransition;
@@ -751,11 +761,12 @@ class Game {
     this.stageFrame++;
     this.flash = Math.max(0, this.flash - 1);
     this.banner = Math.max(0, this.banner - 1);
+    this.fullPowerMode = Math.max(0, this.fullPowerMode - 1);
     this.stageIntro = 0;
     this.player.state = 'invuln';
     this.player.invuln = PLAYER_RESPAWN_INVULN;
     this.player.shotFrame = -1;
-    const t = clamp(tr.frame / tr.duration, 0, 1);
+    const t = clamp(tr.frame / STAGE_TRANSITION_FLY_FRAMES, 0, 1);
     const ease = 1 - (1 - t) * (1 - t);
     this.player.x = tr.startX + (192 - tr.startX) * ease;
     this.player.y = tr.startY + (-58 - tr.startY) * ease;
@@ -1193,7 +1204,7 @@ class Game {
     return {
       player: this.player,
       lastEnemyHit: this.frameHomingTarget,
-      onClearItems: () => { this.items = []; },
+      onClearItems: () => this.attractAllItems(),
       onText: (label) => this.text(label, this.player.x - 24, this.player.y - 48, 90, '#ffd6e4'),
       onSound: (idx) => this.audio?.sfx(idx),
       onParticles: (effectId, x, y, count, color) => this.spawnEffectParticles(effectId, x, y, count, color),
@@ -1262,6 +1273,9 @@ class Game {
   refreshHomingTargetFromEnemies() {
     this.lastEnemyHit = TH06_LOGIC.chooseHomingTarget(this.enemies);
   }
+  enemyDeathSound(enemy) {
+    return SOUND.ENEMY_DEAD + ((enemy?.id || 0) & 1);
+  }
   cancelBulletsNear(x, y, radius) {
     this.enemyBullets = this.enemyBullets.filter((b) => {
       const half = this.enemyBulletHalfSize(b);
@@ -1290,10 +1304,10 @@ class Game {
         if (e.ecl) {
           const keep = this.stageRuntime.killEnemy(this, e);
           if (keep) {
-            this.audio?.sfx(e.ecl.isBoss ? SOUND.BOSS_DEAD : SOUND.ENEMY_DEAD);
+            this.audio?.sfx(this.enemyDeathSound(e));
             continue;
           }
-          this.audio?.sfx(e.ecl.isBoss ? SOUND.BOSS_DEAD : SOUND.ENEMY_DEAD);
+          this.audio?.sfx(this.enemyDeathSound(e));
         }
       }
       e.dead = true;
@@ -1616,6 +1630,16 @@ class Game {
     }
     this.items = this.items.filter((i) => i.y < 512);
   }
+  attractAllItems() {
+    for (const item of this.items) {
+      item.state = 1;
+      item.age = Math.max(item.age || 0, 1);
+    }
+  }
+  showFullPowerMode() {
+    this.fullPowerMode = FULL_POWER_MODE_FRAMES;
+    this.text('FULL POWER UP', 132, 176, 96, '#b8e8ff');
+  }
   turnBulletsIntoPointItems() {
     for (const b of this.enemyBullets) {
       this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
@@ -1639,7 +1663,10 @@ class Game {
       this.power = result.power;
       this.powerItemCountForScore = result.powerItemCountForScore;
       this.addScore(result.score);
-      if (reachedFullPower) this.turnBulletsIntoPointItems();
+      if (reachedFullPower) {
+        this.turnBulletsIntoPointItems();
+        this.showFullPowerMode();
+      }
       if (result.powerUp) this.audio?.sfx(SOUND.POWERUP);
       if (item.type === 'power') this.increaseSubrank(1);
     } else if (item.type === 'point') {
@@ -1652,7 +1679,10 @@ class Game {
       this.bombs = clamp(this.bombs + 1, 0, 8);
       this.increaseSubrank(5);
     } else if (item.type === 'fullPower') {
-      if (this.power < 128) this.turnBulletsIntoPointItems();
+      if (this.power < 128) {
+        this.turnBulletsIntoPointItems();
+        this.showFullPowerMode();
+      }
       this.power = 128;
       this.addScore(1000);
       this.audio?.sfx(SOUND.POWERUP);
@@ -2338,14 +2368,15 @@ class Renderer {
       tctx.globalCompositeOperation = 'source-over';
       drawImg = this.tintCanvas;
     }
-    const steps = Math.max(2, Math.min(24, Math.ceil(h / 32)));
+    const steps = Math.max(2, Math.min(64, Math.ceil(h / 16)));
     for (let i = 0; i < steps; i++) {
-      const y0 = h * i / steps;
-      const y1 = h * (i + 1) / steps;
+      const overlap = 0.75;
+      const y0 = Math.max(0, h * i / steps - (i > 0 ? overlap : 0));
+      const y1 = Math.min(h, h * (i + 1) / steps + (i < steps - 1 ? overlap : 0));
       const top = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y0, y0);
       const bottom = this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y1, y1);
       if (!top || !bottom) continue;
-      this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * i / steps, rect.h * (i + 1) / steps, fog);
+      this.stageDrawProjectedStrip(drawImg, rect, top, bottom, rect.h * y0 / h, rect.h * y1 / h, fog);
     }
   }
   stageStd(std, fog) {
@@ -2754,6 +2785,8 @@ class Renderer {
     const g = this.game;
     this.stageIntroOverlay();
     this.itemGetBorderLine();
+    this.fullPowerModeOverlay();
+    this.stageTransitionOverlay();
     if (g.dialogue?.active) this.dialogue(g.dialogue);
     if (g.phase === 'paused') {
       this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', 0.52);
@@ -2779,6 +2812,30 @@ class Renderer {
       this.fillText(`BGM ${g.bgmLabel}`, PLAYFIELD.x + 18, PLAYFIELD.y + 398, 13, '#bff8ff');
       this.ctx.globalAlpha = 1;
     }
+  }
+  fullPowerModeOverlay() {
+    const timer = this.game.fullPowerMode || 0;
+    if (timer <= 0) return;
+    const fadeIn = Math.min(1, (FULL_POWER_MODE_FRAMES - timer) / 18);
+    const fadeOut = Math.min(1, timer / 28);
+    const alpha = Math.min(fadeIn, fadeOut);
+    this.ctx.save();
+    this.ctx.globalAlpha = alpha;
+    this.fillText('FULL POWER UP', PLAYFIELD.x + 84, PLAYFIELD.y + 166, 24, '#b8e8ff');
+    this.fillText('FULL POWER UP', PLAYFIELD.x + 86, PLAYFIELD.y + 168, 24, '#ffffff');
+    this.ctx.restore();
+  }
+  stageTransitionOverlay() {
+    const g = this.game;
+    let alpha = 0;
+    if (g.phase === 'stageTransition' && g.stageTransition) {
+      const tr = g.stageTransition;
+      alpha = clamp((tr.frame - STAGE_TRANSITION_FLY_FRAMES * 0.55) / (tr.duration - STAGE_TRANSITION_FLY_FRAMES * 0.55), 0, 1);
+    } else if (g.stageEntryFade > 0) {
+      alpha = clamp(g.stageEntryFade / STAGE_ENTRY_FADE_FRAMES, 0, 1);
+    }
+    if (alpha <= 0) return;
+    this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#000', alpha);
   }
   stageClearOverlay() {
     const g = this.game;
@@ -2972,6 +3029,8 @@ async function main() {
       bombs: game.bombs,
       score: game.score,
       graze: game.graze,
+      fullPowerMode: game.fullPowerMode || 0,
+      stageEntryFade: game.stageEntryFade || 0,
       boss: {
         present: game.bossUi.present,
         name: game.bossUi.bossName,
@@ -3028,6 +3087,7 @@ async function main() {
       runtime: {
         timelineIndex: game.stageRuntime.timelineIndex,
         timelineLength: game.stageRuntime.ecl.timeline.length,
+        timelineComplete: game.stageRuntime.isTimelineComplete(),
         stageBg: game.stageAssets.stageBg,
         effect: game.stageAssets.effect
       }
@@ -3066,6 +3126,58 @@ async function main() {
       renderer.draw();
       return snapshot();
     };
+    const setStageFrame = (frame) => {
+      game.stageFrame = Math.max(0, Math.trunc(frame || 0));
+      renderer.draw();
+      return snapshot();
+    };
+    const spawnItem = (type, x = game.player.x, y = game.player.y, options = {}) => {
+      game.spawnItem(type, x, y, { state: options.state ?? 0 });
+      renderer.draw();
+      return snapshot();
+    };
+    const spawnEnemyBullet = (options = {}) => {
+      const sprite = options.sprite ?? 0;
+      const offset = options.offset ?? 0;
+      const rect = game.stageRuntime.bulletRect(sprite, offset);
+      if (!rect) throw new Error(`Missing test bullet rect for sprite ${sprite} offset ${offset}`);
+      const grazeSize = TH06_LOGIC.bulletGrazeSize(sprite, rect.h);
+      game.enemyBullets.push({
+        id: game.id++,
+        x: options.x ?? 192,
+        y: options.y ?? 128,
+        vx: options.vx ?? 0,
+        vy: options.vy ?? 0,
+        speed: Math.hypot(options.vx ?? 0, options.vy ?? 0),
+        angle: options.angle ?? 0,
+        flags: options.flags ?? 0,
+        exInts: [0, 0, 0, 0],
+        exFloats: [0, 0, 0, 0],
+        age: 0,
+        spawnState: 1,
+        spawnAge: 0,
+        spawnDuration: 0,
+        spawnMoveScale: 1,
+        collisionActive: true,
+        eclSprite: sprite,
+        eclOffset: offset,
+        rect,
+        r: Math.max(rect.w, rect.h) / 2,
+        hitR: Math.max(grazeSize.x, grazeSize.y) / 2,
+        grazeSize,
+        kind: 'ecl'
+      });
+      renderer.draw();
+      return snapshot();
+    };
+    const killBosses = () => {
+      for (const enemy of game.enemies) {
+        if (enemy.ecl?.isBoss && enemy.ecl.canTakeDamage !== false) enemy.hp = 0;
+      }
+      game.update({ held: new Set(), pressed: new Set() });
+      renderer.draw();
+      return snapshot();
+    };
     const canvasStats = () => {
       const data = renderer.ctx.getImageData(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height).data;
       let nonBlack = 0;
@@ -3079,6 +3191,10 @@ async function main() {
     window.__TH06_TEST__ = {
       setStage,
       advance,
+      setStageFrame,
+      spawnItem,
+      spawnEnemyBullet,
+      killBosses,
       snapshot,
       canvasStats,
       constants: {

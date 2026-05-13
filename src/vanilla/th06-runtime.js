@@ -386,8 +386,12 @@
       this.objects = [];
       this.instances = [];
       this.cameraKeys = [];
-      this.fogKeys = [{ frame: 0, color: 0xff100020, r: 16, g: 0, b: 32, near: 200, far: 500 }];
-      this.facingKeys = [{ frame: 0, x: 0, y: 0, z: 1 }];
+      const defaultFog = { frame: 0, color: 0xff100020, r: 16, g: 0, b: 32, near: 200, far: 500 };
+      const defaultFacing = { frame: 0, x: 0, y: 0, z: 1 };
+      this.fogKeys = [defaultFog];
+      this.fogEvents = [{ frame: 0, start: defaultFog, target: defaultFog, duration: 0 }];
+      this.facingKeys = [defaultFacing];
+      this.facingEvents = [{ frame: 0, start: defaultFacing, target: defaultFacing, duration: 0 }];
       this.parse();
     }
     parse() {
@@ -406,6 +410,10 @@
           z: v.f32(off + 12)
         });
       }
+      let currentFog = this.fogEvents[0].target;
+      let currentFacing = this.facingEvents[0].target;
+      let pendingFogDuration = 0;
+      let pendingFacingDuration = 0;
       for (let off = this.scriptOffset, guard = 0; off + 20 <= v.bytes.length && guard < 256; off += 20, guard++) {
         const frame = v.i32(off);
         const op = v.i16(off + 4);
@@ -414,7 +422,7 @@
         if (op === 0) this.cameraKeys.push(key);
         else if (op === 1) {
           const color = key.i0 >>> 0;
-          this.fogKeys.push({
+          const target = {
             frame: Math.max(0, frame),
             color,
             r: (color >> 16) & 0xff,
@@ -422,12 +430,36 @@
             b: color & 0xff,
             near: key.y,
             far: key.z
+          };
+          this.fogKeys.push(target);
+          this.fogEvents.push({
+            frame: Math.max(0, frame),
+            start: currentFog,
+            target,
+            duration: Math.max(0, pendingFogDuration | 0)
           });
+          currentFog = target;
+          pendingFogDuration = 0;
         }
-        else if (op === 2) this.facingKeys.push(key);
+        else if (op === 2) {
+          const target = { frame: Math.max(0, frame), x: key.x, y: key.y, z: key.z };
+          this.facingKeys.push(target);
+          this.facingEvents.push({
+            frame: Math.max(0, frame),
+            start: currentFacing,
+            target,
+            duration: Math.max(0, pendingFacingDuration | 0)
+          });
+          currentFacing = target;
+          pendingFacingDuration = 0;
+        }
+        else if (op === 3) pendingFacingDuration = Math.max(0, key.i0 | 0);
+        else if (op === 4) pendingFogDuration = Math.max(0, key.i0 | 0);
       }
       this.cameraKeys.sort((a, b) => a.frame - b.frame);
       this.fogKeys.sort((a, b) => a.frame - b.frame);
+      this.fogEvents.sort((a, b) => a.frame - b.frame);
+      this.facingEvents.sort((a, b) => a.frame - b.frame);
     }
     parseObject(off) {
       const v = this.view;
@@ -481,23 +513,43 @@
       };
     }
     fog(frame) {
-      let prev = this.fogKeys[0];
-      for (const key of this.fogKeys) {
-        if (key.frame >= 0 && key.frame <= frame) prev = key;
+      let event = this.fogEvents[0];
+      for (const key of this.fogEvents) {
+        if (key.frame >= 0 && key.frame <= frame) event = key;
         else if (key.frame > frame) break;
       }
+      const t = event.duration > 0 ? clamp((frame - event.frame) / event.duration, 0, 1) : 1;
+      const mix = (a, b) => a + (b - a) * t;
+      const r = Math.round(mix(event.start.r, event.target.r));
+      const g = Math.round(mix(event.start.g, event.target.g));
+      const b = Math.round(mix(event.start.b, event.target.b));
+      const prev = {
+        frame: event.frame,
+        color: (0xff000000 | (r << 16) | (g << 8) | b) >>> 0,
+        r,
+        g,
+        b,
+        near: mix(event.start.near, event.target.near),
+        far: mix(event.start.far, event.target.far)
+      };
       return {
         ...prev,
         css: `rgb(${prev.r}, ${prev.g}, ${prev.b})`
       };
     }
     facing(frame) {
-      let prev = this.facingKeys[0];
-      for (const key of this.facingKeys) {
-        if (key.frame >= 0 && key.frame <= frame) prev = key;
+      let event = this.facingEvents[0];
+      for (const key of this.facingEvents) {
+        if (key.frame >= 0 && key.frame <= frame) event = key;
         else if (key.frame > frame) break;
       }
-      return prev || { x: 0, y: 0, z: 1 };
+      const t = event.duration > 0 ? clamp((frame - event.frame) / event.duration, 0, 1) : 1;
+      return {
+        frame: event.frame,
+        x: event.start.x + (event.target.x - event.start.x) * t,
+        y: event.start.y + (event.target.y - event.start.y) * t,
+        z: event.start.z + (event.target.z - event.start.z) * t
+      };
     }
     project(x, y, z, playfield) {
       const fov = 30 * DEG;
@@ -619,6 +671,9 @@
       this.timelineIndex = 0;
       this.randomItemIndex = 0;
       this.randomSpawnIndex = 0;
+    }
+    isTimelineComplete() {
+      return this.timelineIndex >= this.ecl.timeline.length;
     }
     update(game) {
       while (this.timelineIndex < this.ecl.timeline.length && this.ecl.timeline[this.timelineIndex].time <= game.stageFrame) {
