@@ -814,7 +814,9 @@
     let target = { x: -999, y: -999 };
     for (const enemy of enemies || []) {
       if (!enemy || enemy.dead || enemy.hp <= 0) continue;
+      if (enemy.ecl && enemy.ecl.seen === false) continue;
       if (enemy.ecl && enemy.ecl.canTakeDamage === false) continue;
+      if (enemy.ecl && enemy.ecl.interactable === false) continue;
       if (target.y < enemy.y) target = { x: enemy.x, y: enemy.y };
     }
     return target;
