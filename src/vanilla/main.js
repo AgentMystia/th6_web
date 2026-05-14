@@ -584,6 +584,10 @@ class AutoplayController {
     this.frame = 0;
     this.lastDx = 0;
     this.lastDy = 0;
+    this.threatFrame = -1;
+    this.threatBullets = [];
+    this.threatLasers = [];
+    this.safePointCache = null;
   }
   nextInput(game, humanInput = { held: new Set(), pressed: new Set() }) {
     this.frame++;
@@ -612,6 +616,7 @@ class AutoplayController {
     return { held, pressed };
   }
   decide(game) {
+    this.prepareThreats(game);
     const riskNow = this.risk(game, { x: game.player.x, y: game.player.y }, [0, 3, 6, 12, 18, 30], 220);
     const target = this.target(game, riskNow);
     const safePoint = this.bestSafePoint(game, target, riskNow);
@@ -658,6 +663,34 @@ class AutoplayController {
       }
     }
     return out;
+  }
+  prepareThreats(game) {
+    if (this.threatFrame === game.stageFrame) return;
+    const player = game.player || { x: 192, y: 384 };
+    const bullets = [];
+    for (const bullet of game.enemyBullets || []) {
+      if (bullet.collisionActive === false && (bullet.spawnDuration || 0) - (bullet.spawnAge || 0) > 18) continue;
+      const half = game.enemyBulletHalfSize?.(bullet) || { x: bullet.r || 4, y: bullet.r || 4 };
+      const vx = bullet.vx || 0;
+      const vy = bullet.vy || 0;
+      const speed = Math.hypot(vx, vy);
+      bullets.push({
+        raw: bullet,
+        x: bullet.x,
+        y: bullet.y,
+        vx,
+        vy,
+        halfX: half.x,
+        halfY: half.y,
+        speed,
+        grazed: !!bullet.grazed,
+        priority: Math.hypot(bullet.x - player.x, bullet.y - player.y) - speed * 24
+      });
+    }
+    if (bullets.length > 480) bullets.sort((a, b) => a.priority - b.priority).length = 480;
+    this.threatFrame = game.stageFrame;
+    this.threatBullets = bullets;
+    this.threatLasers = (game.enemyLasers || []).filter((laser) => laser.inUse);
   }
   activeItems(game) {
     return (game.items || []).filter((item) => !item.dead && item.y < ITEM_DESPAWN_Y);
@@ -758,18 +791,35 @@ class AutoplayController {
     return boss + enemy.y * 4 + closeX + leavingSoon + lowHp;
   }
   bestSafePoint(game, target, riskNow = this.risk(game, { x: game.player.x, y: game.player.y })) {
+    this.prepareThreats(game);
+    const danger = riskNow.score > 700 || riskNow.lethal;
+    const targetKey = [
+      Math.round(target.x / 24),
+      Math.round(target.y / 24),
+      target.enemy?.id ?? 0,
+      target.itemGoal ? 1 : 0,
+      danger ? 1 : 0
+    ].join(':');
+    const cached = this.safePointCache;
+    const cacheLife = danger ? 2 : 6;
+    if (cached?.key === targetKey && this.frame - cached.frame <= cacheLife) {
+      const cachedRisk = this.risk(game, cached, [0, 6, 12, 24], 220);
+      if (!cachedRisk.lethal && cachedRisk.score < (danger ? 1600 : 650)) {
+        return { x: cached.x, y: cached.y, weight: cached.weight };
+      }
+    }
     let best = {
       x: clamp(target.x, MOVE_AREA.x, MOVE_AREA.right),
       y: clamp(target.y, MOVE_AREA.y, MOVE_AREA.bottom),
       weight: target.weight,
       score: -this.risk(game, target, [0, 6, 12, 24, 36], 220).score
     };
-    const danger = riskNow.score > 700 || riskNow.lethal;
-    const xs = danger ? [24, 56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376]
+    const dense = this.threatBullets.length > 420;
+    const xs = danger ? (dense ? [32, 80, 128, 176, 224, 272, 320, 368] : [24, 56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376])
       : [48, 96, 144, 192, 240, 288, 336];
-    const ys = danger ? [56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376, 416]
+    const ys = danger ? (dense ? [64, 112, 160, 208, 256, 304, 352, 408] : [56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376, 416])
       : [80, 112, 144, 176, 224, 272, 336, 400];
-    const localOffsets = [-96, -64, -32, 0, 32, 64, 96];
+    const localOffsets = dense ? [-96, -48, 0, 48, 96] : [-96, -64, -32, 0, 32, 64, 96];
     const points = [];
     for (const x of xs) for (const y of ys) points.push({ x, y });
     for (const ox of localOffsets) {
@@ -802,18 +852,21 @@ class AutoplayController {
       if (risk.lethal) score -= 50000;
       if (score > best.score) best = { ...point, score, risk, weight: danger ? 1.8 : target.weight };
     }
-    return {
+    const result = {
       x: clamp(best.x, MOVE_AREA.x, MOVE_AREA.right),
       y: clamp(best.y, MOVE_AREA.y, MOVE_AREA.bottom),
       weight: best.weight || target.weight || 1
     };
+    this.safePointCache = { ...result, key: targetKey, frame: this.frame };
+    return result;
   }
   projectPath(game, candidate) {
     const spec = game.spec();
     let speed = candidate.focus ? spec.focus : spec.speed;
     if (candidate.dx && candidate.dy) speed /= Math.sqrt(2);
     const path = [];
-    for (const t of [1, 4, 8, 12, 18, 26, 36, 48]) {
+    const times = this.threatBullets.length > 420 ? [1, 4, 8, 14, 22, 32] : [1, 4, 8, 12, 18, 26, 36, 48];
+    for (const t of times) {
       path.push({
         t,
         x: clamp(game.player.x + candidate.dx * speed * t, MOVE_AREA.x, MOVE_AREA.right),
@@ -861,18 +914,17 @@ class AutoplayController {
     return Math.min(score, 260);
   }
   grazeReward(game, pos, times = [0], margin = 140) {
+    this.prepareThreats(game);
     let reward = 0;
-    for (const bullet of game.enemyBullets || []) {
+    for (const bullet of this.threatBullets) {
       if (bullet.grazed) continue;
-      if (bullet.collisionActive === false && (bullet.spawnDuration || 0) - (bullet.spawnAge || 0) > 18) continue;
-      const half = game.enemyBulletHalfSize?.(bullet) || { x: bullet.r || 4, y: bullet.r || 4 };
-      const maxSpeed = Math.hypot(bullet.vx || 0, bullet.vy || 0);
+      const maxSpeed = bullet.speed;
       if (Math.abs(bullet.x - pos.x) > margin + maxSpeed * 42 || Math.abs(bullet.y - pos.y) > margin + maxSpeed * 42) continue;
       for (const t of times) {
-        const bx = bullet.x + (bullet.vx || 0) * t;
-        const by = bullet.y + (bullet.vy || 0) * t;
-        const dx = Math.abs(pos.x - bx) - half.x - PLAYER_HITBOX_HALF.x;
-        const dy = Math.abs(pos.y - by) - half.y - PLAYER_HITBOX_HALF.y;
+        const bx = bullet.x + bullet.vx * t;
+        const by = bullet.y + bullet.vy * t;
+        const dx = Math.abs(pos.x - bx) - bullet.halfX - PLAYER_HITBOX_HALF.x;
+        const dy = Math.abs(pos.y - by) - bullet.halfY - PLAYER_HITBOX_HALF.y;
         if (dx <= 0 && dy <= 0) continue;
         if (dx > PLAYER_GRAZE_PADDING || dy > PLAYER_GRAZE_PADDING) continue;
         const gap = Math.max(0, dx, dy);
@@ -880,8 +932,7 @@ class AutoplayController {
         reward += Math.max(0, PLAYER_GRAZE_PADDING + 4 - gap) * 2.8 / (1 + t * 0.08);
       }
     }
-    for (const laser of game.enemyLasers || []) {
-      if (!laser.inUse) continue;
+    for (const laser of this.threatLasers) {
       const local = game.laserLocal?.(laser, pos);
       if (!local) continue;
       const length = Math.max(0, (laser.endOffset || 0) - (laser.startOffset || 0));
@@ -901,7 +952,10 @@ class AutoplayController {
     return Math.min(reward, 320);
   }
   escapeScore(game, pos, riskNow) {
-    const offsets = [
+    const offsets = this.threatBullets.length > 420 ? [
+      [0, 0], [-48, 0], [48, 0], [0, -48], [0, 48],
+      [-72, -72], [72, -72], [-72, 72], [72, 72]
+    ] : [
       [0, 0], [-36, 0], [36, 0], [0, -36], [0, 36],
       [-36, -36], [36, -36], [-36, 36], [36, 36],
       [-72, 0], [72, 0], [0, -72], [0, 72]
@@ -931,18 +985,17 @@ class AutoplayController {
     return Math.max(0, 28 - xGap) * 5 + Math.max(0, 24 - yGap) * 4;
   }
   risk(game, pos, times = [0, 4, 8, 12, 18, 26, 36], margin = 160) {
+    this.prepareThreats(game);
     let score = 0;
     let lethal = false;
-    for (const bullet of game.enemyBullets || []) {
-      if (bullet.collisionActive === false && (bullet.spawnDuration || 0) - (bullet.spawnAge || 0) > 18) continue;
-      const half = game.enemyBulletHalfSize?.(bullet) || { x: bullet.r || 4, y: bullet.r || 4 };
-      const maxSpeed = Math.hypot(bullet.vx || 0, bullet.vy || 0);
+    for (const bullet of this.threatBullets) {
+      const maxSpeed = bullet.speed;
       if (Math.abs(bullet.x - pos.x) > margin + maxSpeed * 50 || Math.abs(bullet.y - pos.y) > margin + maxSpeed * 50) continue;
       for (const t of times) {
-        const bx = bullet.x + (bullet.vx || 0) * t;
-        const by = bullet.y + (bullet.vy || 0) * t;
-        const dx = Math.abs(pos.x - bx) - half.x - PLAYER_HITBOX_HALF.x;
-        const dy = Math.abs(pos.y - by) - half.y - PLAYER_HITBOX_HALF.y;
+        const bx = bullet.x + bullet.vx * t;
+        const by = bullet.y + bullet.vy * t;
+        const dx = Math.abs(pos.x - bx) - bullet.halfX - PLAYER_HITBOX_HALF.x;
+        const dy = Math.abs(pos.y - by) - bullet.halfY - PLAYER_HITBOX_HALF.y;
         if (dx <= 0 && dy <= 0) {
           lethal = true;
           score += 100000 / (t + 1);
@@ -951,9 +1004,9 @@ class AutoplayController {
         const gap = Math.hypot(Math.max(0, dx), Math.max(0, dy));
         score += Math.max(0, 900 - gap * 28) / (t + 1.25);
       }
+      if (lethal && score > 250000) break;
     }
-    for (const laser of game.enemyLasers || []) {
-      if (!laser.inUse) continue;
+    for (const laser of this.threatLasers) {
       const local = game.laserLocal?.(laser, pos);
       if (!local) continue;
       const length = Math.max(0, (laser.endOffset || 0) - (laser.startOffset || 0));

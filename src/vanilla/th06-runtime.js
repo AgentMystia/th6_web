@@ -623,9 +623,9 @@
           evt.x = v.f32(off + 8);
           evt.y = v.f32(off + 12);
           evt.z = v.f32(off + 16);
-          evt.life = v.u16(off + 20);
-          evt.item = v.u16(off + 22);
-          evt.score = v.u32(off + 24);
+          evt.life = v.i16(off + 20);
+          evt.item = v.i16(off + 22);
+          evt.score = v.i32(off + 24);
         } else if (size >= 16) {
           evt.i0 = v.i32(off + 8);
           evt.i1 = v.i32(off + 12);
@@ -694,6 +694,7 @@
       this.msg = stageData.msg ? new Th06Msg(stageData.msg) : null;
       this.randomItemIndex = 0;
       this.randomSpawnIndex = 0;
+      this.bossSlots = [];
       this.reset();
     }
     reset() {
@@ -701,10 +702,14 @@
       this.timelineFrame = 0;
       this.randomItemIndex = 0;
       this.randomSpawnIndex = 0;
+      this.bossSlots = [];
       this.std.reset();
     }
     isTimelineComplete() {
       return this.timelineIndex >= this.ecl.timeline.length;
+    }
+    isEnemyActive(game, enemy) {
+      return !!enemy && !enemy.dead && (!game.enemies || game.enemies.includes(enemy));
     }
     update(game) {
       if (!game.timeStopped) this.std.advance();
@@ -730,9 +735,8 @@
         return game.isDialogueBlocking?.() ? 'hold' : null;
       }
       if (evt.op === 10) {
-        const bosses = game.enemies.filter((enemy) => enemy.ecl?.isBoss);
-        const boss = bosses[evt.i0 || 0];
-        if (boss) boss.ecl.runInterrupt = evt.i1 || 0;
+        const boss = this.bossSlots[evt.i0 || 0];
+        if (this.isEnemyActive(game, boss)) boss.ecl.runInterrupt = evt.i1 || 0;
         return null;
       }
       if (evt.op === 11) {
@@ -740,8 +744,8 @@
         return null;
       }
       if (evt.op === 12) {
-        const boss = game.enemies.find((enemy) => enemy.ecl?.isBoss);
-        return boss ? 'hold' : null;
+        const boss = this.bossSlots[evt.arg0 || 0];
+        return this.isEnemyActive(game, boss) ? 'hold' : null;
       }
       if (![0, 1, 2, 3, 4, 5, 6, 7].includes(evt.op)) return;
       if (game.enemies.some((enemy) => enemy.ecl?.isBoss)) return null;
@@ -751,26 +755,46 @@
       if (x <= -990) x = game.rng.range(384);
       if (y <= -990) y = game.rng.range(448);
       if (z <= -990) z = game.rng.range(800);
+      this.spawnEclEnemy(game, {
+        subId: evt.arg0,
+        x,
+        y,
+        z,
+        life: evt.op === 1 || evt.op === 3 || evt.op === 5 || evt.op === 7 ? -1 : evt.life,
+        item: evt.op === 1 || evt.op === 3 || evt.op === 5 || evt.op === 7 ? -2 : evt.item,
+        score: evt.op === 1 || evt.op === 3 || evt.op === 5 || evt.op === 7 ? -1 : evt.score,
+        mirrored: evt.op === 2 || evt.op === 3 || evt.op === 6 || evt.op === 7
+      });
+    }
+    spawnEclEnemy(game, { subId, x, y, z = 0, life = -1, item = -1, score = -1, mirrored = false }) {
+      const hasTimelineLife = life >= 0;
+      const hasTimelineScore = score >= 0;
+      const initialHp = hasTimelineLife ? life | 0 : 1;
+      const initialScore = hasTimelineScore ? Math.max(0, score | 0) : 100;
       const e = {
         id: game.id++,
-        kind: evt.arg0 >= 8 ? 'midboss' : 'fairyRed',
+        kind: subId >= 8 ? 'midboss' : 'fairyRed',
         x, y, z,
         ix: x, iy: y,
-        hp: Math.max(1, evt.life || 1),
-        maxHp: Math.max(1, evt.life || 1),
+        hp: initialHp,
+        maxHp: initialHp,
         radius: 14,
-        score: evt.score || 0,
+        score: initialScore,
         frame: 0,
         move: { type: 'ecl' },
         patterns: [],
         drops: [],
         phaseFrame: 0,
         bombed: false,
-        ecl: this.makeEnemyState(evt.arg0, evt.op === 2 || evt.op === 3 || evt.op === 6 || evt.op === 7, evt.item)
+        ecl: this.makeEnemyState(subId, mirrored, item)
       };
       game.enemies.push(e);
       this.runEcl(game, e);
+      if (hasTimelineLife) e.hp = e.maxHp = initialHp;
+      else e.maxHp = Math.max(1, e.hp);
+      if (hasTimelineScore) e.score = initialScore;
       e.kind = e.ecl.isBoss ? 'boss' : this.enemyKindFromAnm(e.ecl.currentAnm);
+      return e;
     }
     makeEnemyState(subId, mirrored, itemDrop) {
       return {
@@ -1190,7 +1214,11 @@
         s.deathAnm2 = v.i8(a + 1);
         s.deathAnm3 = v.i8(a + 2);
       } else if (op === 101) {
-        s.isBoss = v.i32(a) >= 0;
+        const bossSlot = v.i32(a);
+        if (s.bossSlot != null && this.bossSlots[s.bossSlot] === e) this.bossSlots[s.bossSlot] = null;
+        s.bossSlot = bossSlot >= 0 ? bossSlot : null;
+        s.isBoss = bossSlot >= 0;
+        if (s.isBoss) this.bossSlots[bossSlot] = e;
         e.kind = s.isBoss ? 'boss' : e.kind;
         game.setBossPresent?.(s.isBoss, e);
       } else if (op === 102) {
@@ -1899,26 +1927,16 @@
     }
     spawnChildEnemy(game, parent, a) {
       const subId = this.ecl.view.i32(a);
-      const e = {
-        id: game.id++,
-        kind: subId >= 8 ? 'midboss' : 'fairyRed',
+      this.spawnEclEnemy(game, {
+        subId,
         x: this.getFloat(parent, a + 4),
         y: this.getFloat(parent, a + 8),
         z: this.getFloat(parent, a + 12),
-        hp: Math.max(1, this.ecl.view.i16(a + 16)),
-        maxHp: Math.max(1, this.ecl.view.i16(a + 16)),
-        radius: 14,
+        life: this.ecl.view.i16(a + 16),
+        item: this.ecl.view.i16(a + 18),
         score: this.ecl.view.i32(a + 20),
-        frame: 0,
-        move: { type: 'ecl' },
-        patterns: [],
-        drops: [],
-        bombed: false,
-        ecl: this.makeEnemyState(subId, false, this.ecl.view.i16(a + 18) & 0xffff)
-      };
-      game.enemies.push(e);
-      this.runEcl(game, e);
-      e.kind = e.ecl.isBoss ? 'boss' : this.enemyKindFromAnm(e.ecl.currentAnm);
+        mirrored: false
+      });
     }
     killEnemy(game, e) {
       const s = e.ecl;
@@ -1936,6 +1954,8 @@
       if (game.addScore) game.addScore(e.score || 0);
       else game.score += e.score || 0;
       if (s.isBoss && game.spellcardInfo?.isActive) game.endBossSpell?.({ fromBossDeath: true });
+      if (s.isBoss && s.bossSlot != null && this.bossSlots[s.bossSlot] === e) this.bossSlots[s.bossSlot] = null;
+      if (s.isBoss) game.setBossPresent?.(false, e);
       game.spawnEnemyDeathEffect?.(e, s);
       const drops = this.dropTypes(s.itemDrop);
       for (const drop of drops) {
@@ -1986,12 +2006,12 @@
       }
     }
     dropTypes(itemDrop) {
-      if (itemDrop === 0xffff) {
+      if (itemDrop === -1 || itemDrop === 0xffff) {
         const out = [];
         if (this.randomSpawnIndex++ % 3 === 0) out.push(RANDOM_ITEMS[this.randomItemIndex++ % RANDOM_ITEMS.length]);
         return out;
       }
-      if (itemDrop === 0xfffe) return [];
+      if (itemDrop === -2 || itemDrop === 0xfffe) return [];
       const type = ITEM_TABLE[itemDrop];
       return type ? [type] : [];
     }
