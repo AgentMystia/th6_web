@@ -4,6 +4,7 @@ const GAME_HEIGHT = 480;
 const PLAYFIELD = { x: 32, y: 16, width: 384, height: 448, right: 416, bottom: 464 };
 const MOVE_AREA = { x: 8, y: 16, right: 376, bottom: 432 };
 const STEP_MS = 1000 / 60;
+const STEP_EPSILON_MS = 0.0001;
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const ANGLE_EPSILON = 1e-6;
@@ -24,6 +25,10 @@ const PLAYER_SPAWN_ANIM_FRAMES = 30;
 const PLAYER_DEATHBOMB_WINDOW_FRAMES = 6;
 const PLAYER_BULLET_CAP = 80;
 const ITEM_GET_BORDER_Y = 128;
+// ItemManager removes drops at arcadeRegionSize.y + GAME_REGION_TOP.
+const ITEM_DESPAWN_Y = PLAYFIELD.height + PLAYFIELD.y;
+const HTML_AUDIO_HAVE_CURRENT_DATA = 2;
+const STAGE_WEBGL_ENABLED = typeof location !== 'undefined' && new URLSearchParams(location.search).has('stage-webgl');
 const STAGE_TRANSITION_FRAMES = 240;
 const STAGE_TRANSITION_FLY_FRAMES = 120;
 const STAGE_ENTRY_FADE_FRAMES = 45;
@@ -32,6 +37,11 @@ const ENEMY_SPELLCARD_DECLARATION_FRAMES = 130;
 const ENEMY_SPELLCARD_PORTRAIT_FRAMES = 120;
 const PLAYER_BOMB_DECLARATION_FRAMES = 130;
 const PLAYER_BOMB_PORTRAIT_FRAMES = 120;
+const ANM_SCRIPT_PLAYER_IDLE = 0;
+const ANM_SCRIPT_PLAYER_MOVING_LEFT = 1;
+const ANM_SCRIPT_PLAYER_STOPPING_LEFT = 2;
+const ANM_SCRIPT_PLAYER_MOVING_RIGHT = 3;
+const ANM_SCRIPT_PLAYER_STOPPING_RIGHT = 4;
 const ANM_SCRIPT_PLAYER_BULLET = 64;
 const ANM_SCRIPT_PLAYER_REIMU_A_ORB_BULLET = 65;
 const ANM_SCRIPT_PLAYER_MARISA_A_ORB_BULLET_1 = 65;
@@ -139,6 +149,13 @@ const chars = [
   { id: 'marisaB', family: 'marisa', label: 'Marisa B', sheet: 'player01', speed: 5, focus: 2.5, color: '#c77dff' }
 ];
 const DEMO_ENABLED_CHAR_IDS = new Set(['reimuA', 'reimuB', 'marisaA', 'marisaB']);
+const TITLE_MENU_ITEMS = [
+  { id: 'start', label: 'Start', enabled: true },
+  { id: 'autoplay', label: 'Autoplay', enabled: true },
+  { id: 'replay', label: 'Replay', enabled: false },
+  { id: 'music', label: 'Music Room', enabled: false },
+  { id: 'quit', label: 'Quit', enabled: false }
+];
 
 const keyMap = new Map([
   ['ArrowUp', ['up']],
@@ -216,38 +233,51 @@ class Input {
     this.held = new Set();
     this.codes = new Set();
     this.downEdges = new Set();
+    this.activity = false;
     addEventListener('keydown', (event) => this.down(event), { passive: false });
     addEventListener('keyup', (event) => this.up(event), { passive: false });
     addEventListener('blur', () => {
       this.held.clear();
       this.codes.clear();
       this.downEdges.clear();
+      this.activity = true;
     });
   }
   down(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
     if (!buttons) return;
     event.preventDefault();
+    const wasKnownCode = this.codes.has(event.code);
     this.codes.add(event.code);
     for (const button of buttons) {
+      const edgesBefore = this.downEdges.size;
       if (!event.repeat && !this.held.has(button)) this.downEdges.add(button);
+      if (this.downEdges.size !== edgesBefore) this.activity = true;
       this.held.add(button);
     }
+    if (!event.repeat && !wasKnownCode) this.activity = true;
   }
   up(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
     if (!buttons) return;
     event.preventDefault();
+    const hadKnownCode = this.codes.has(event.code);
     this.codes.delete(event.code);
     this.held.clear();
     for (const code of this.codes) {
       for (const button of keyMap.get(code) || []) this.held.add(button);
     }
+    if (hadKnownCode) this.activity = true;
   }
   frame() {
     const pressed = new Set(this.downEdges);
     this.downEdges.clear();
     return { held: new Set(this.held), pressed };
+  }
+  consumeActivity() {
+    const active = this.activity || this.downEdges.size > 0;
+    this.activity = false;
+    return active;
   }
 }
 
@@ -314,6 +344,10 @@ class AudioBus {
     const idx = this.sfxCursor[spec.file]++ % pool.length;
     const audio = pool[idx];
     try {
+      if (audio.readyState < HTML_AUDIO_HAVE_CURRENT_DATA) {
+        audio.load();
+        return;
+      }
       audio.pause();
       audio.currentTime = 0;
       audio.volume = spec.volume;
@@ -416,6 +450,35 @@ function colorCss(color, alpha = 1) {
   return `rgba(${c.r}, ${c.g}, ${c.b}, ${clamp(c.a * alpha, 0, 1).toFixed(3)})`;
 }
 
+function rotate3(point, rx = 0, ry = 0, rz = 0) {
+  let { x, y, z } = point;
+  if (rx) {
+    const c = Math.cos(rx);
+    const s = Math.sin(rx);
+    const ny = y * c - z * s;
+    const nz = y * s + z * c;
+    y = ny;
+    z = nz;
+  }
+  if (ry) {
+    const c = Math.cos(ry);
+    const s = Math.sin(ry);
+    const nx = x * c + z * s;
+    const nz = -x * s + z * c;
+    x = nx;
+    z = nz;
+  }
+  if (rz) {
+    const c = Math.cos(rz);
+    const s = Math.sin(rz);
+    const nx = x * c - y * s;
+    const ny = x * s + y * c;
+    x = nx;
+    y = ny;
+  }
+  return { x, y, z };
+}
+
 function reimuABullet(wait, frame, ox, oy, angle, speed, damage, source, script, sound = -1) {
   return { wait, frame, ox, oy, sx: 12, sy: 12, angle: angle * DEG, speed, damage, source, script, sound, bulletType: script === ANM_SCRIPT_PLAYER_REIMU_A_ORB_BULLET ? 1 : 0 };
 }
@@ -511,11 +574,424 @@ function sourcePowerData(shotId, power) {
   return rank;
 }
 
+// Debug-only driver. It is deliberately isolated so Autoplay can be removed
+// without touching the original input, stage, scoring, or ECL systems.
+class AutoplayController {
+  constructor() {
+    this.reset();
+  }
+  reset() {
+    this.frame = 0;
+    this.lastDx = 0;
+    this.lastDy = 0;
+  }
+  nextInput(game, humanInput = { held: new Set(), pressed: new Set() }) {
+    this.frame++;
+    if (!game.autoplayMode) return humanInput;
+    if (game.phase !== 'playing') return humanInput;
+    const pressed = new Set();
+    const held = new Set();
+    if (humanInput.pressed?.has('menu')) pressed.add('menu');
+    if (humanInput.pressed?.has('back')) pressed.add('back');
+    if (game.dialogue?.active) {
+      if (this.frame % 10 === 0) pressed.add('confirm');
+      return { held, pressed };
+    }
+    if (game.player.state === 'deathbomb') {
+      if (game.bombs > 0 && game.activeBombs.length === 0) pressed.add('bomb');
+      return { held, pressed };
+    }
+    if (game.phase !== 'playing' || game.player.state === 'dead' || game.player.state === 'spawning') return { held, pressed };
+    held.add('shoot');
+    const decision = this.decide(game);
+    if (decision.dx < 0) held.add('left');
+    else if (decision.dx > 0) held.add('right');
+    if (decision.dy < 0) held.add('up');
+    else if (decision.dy > 0) held.add('down');
+    if (decision.focus) held.add('focus');
+    return { held, pressed };
+  }
+  decide(game) {
+    const riskNow = this.risk(game, { x: game.player.x, y: game.player.y }, [0, 3, 6, 12, 18, 30], 220);
+    const target = this.target(game, riskNow);
+    const safePoint = this.bestSafePoint(game, target, riskNow);
+    let best = null;
+    for (const candidate of this.candidates(game)) {
+      const path = this.projectPath(game, candidate);
+      const risk = this.pathRisk(game, path);
+      const future = path[path.length - 1] || candidate;
+      const dist = Math.hypot(future.x - safePoint.x, future.y - safePoint.y);
+      const nextDist = Math.hypot(candidate.x - safePoint.x, candidate.y - safePoint.y);
+      const lineUp = target.enemy ? Math.abs(candidate.x - target.enemy.x) : 0;
+      const focusBonus = candidate.focus && (target.wantFocus || risk.score > 900) ? 48 : candidate.focus ? -10 : 0;
+      const aggression = target.aggressive && risk.score < 900 ? (PLAYFIELD.height - future.y) * (target.itemGoal ? 0.055 : 0.035) : 0;
+      const inertia = candidate.dx === this.lastDx && candidate.dy === this.lastDy ? 5 : 0;
+      const dangerWeight = riskNow.score > 900 || riskNow.lethal ? 1.35 : 1;
+      const item = this.itemReward(game, candidate, future, target);
+      const graze = risk.lethal ? 0 : this.pathGrazeReward(game, path);
+      const wall = this.wallPenalty(future);
+      const escape = riskNow.score > 250 || risk.score > 300 || wall > 0 ? this.escapeScore(game, future, riskNow) : 28;
+      let score = -dist * safePoint.weight - nextDist * 0.42 - risk.score * dangerWeight - lineUp * 0.28 + focusBonus + aggression + inertia + item + escape + graze - wall;
+      if (risk.lethal) score -= 250000;
+      if (!best || score > best.score) best = { ...candidate, score, risk };
+    }
+    this.lastDx = best?.dx ?? 0;
+    this.lastDy = best?.dy ?? 0;
+    return best || { dx: 0, dy: 0, focus: false };
+  }
+  candidates(game) {
+    const spec = game.spec();
+    const out = [];
+    for (const focus of [false, true]) {
+      for (const dx of [-1, 0, 1]) {
+        for (const dy of [-1, 0, 1]) {
+          let speed = focus ? spec.focus : spec.speed;
+          if (dx && dy) speed /= Math.sqrt(2);
+          out.push({
+            dx,
+            dy,
+            focus,
+            x: clamp(game.player.x + dx * speed, MOVE_AREA.x, MOVE_AREA.right),
+            y: clamp(game.player.y + dy * speed, MOVE_AREA.y, MOVE_AREA.bottom)
+          });
+        }
+      }
+    }
+    return out;
+  }
+  activeItems(game) {
+    return (game.items || []).filter((item) => !item.dead && item.y < ITEM_DESPAWN_Y);
+  }
+  itemWeight(item, game) {
+    const base = {
+      life: 900,
+      bomb: 520,
+      fullPower: 620,
+      bigPower: game.power < 128 ? 260 : 120,
+      power: game.power < 128 ? 120 : 36,
+      point: 150,
+      pointBullet: 115
+    }[item.type] ?? 80;
+    const urgency = 1 + clamp((item.y - 224) / Math.max(1, ITEM_DESPAWN_Y - 224), 0, 1) * 3;
+    const topValue = item.y < ITEM_GET_BORDER_Y ? 1.25 : 1;
+    return base * urgency * topValue;
+  }
+  itemGoal(game, items, enemy, riskNow) {
+    if (!items.length) return null;
+    const weighted = items
+      .map((item) => ({ item, weight: this.itemWeight(item, game) }))
+      .sort((a, b) => b.weight - a.weight);
+    const total = weighted.reduce((sum, entry) => sum + entry.weight, 0) || 1;
+    const avgX = weighted.reduce((sum, entry) => sum + entry.item.x * entry.weight, 0) / total;
+    const avgY = weighted.reduce((sum, entry) => sum + entry.item.y * entry.weight, 0) / total;
+    const maxY = Math.max(...items.map((item) => item.y));
+    const pointCount = items.filter((item) => item.type === 'point' || item.type === 'pointBullet').length;
+    const highValue = weighted.some((entry) => entry.weight >= 500);
+    const urgent = highValue || maxY > 300 || items.length >= 5 || pointCount >= 3;
+    const wantPoc = urgent || pointCount >= 2 || (game.power >= 128 && items.length > 0);
+    if (wantPoc) {
+      const x = enemy && !enemy.ecl?.isBoss ? avgX * 0.55 + enemy.x * 0.45 : avgX;
+      return {
+        x: clamp(x, 48, 336),
+        y: riskNow.lethal || riskNow.score > 1800 ? 128 : 92,
+        weight: urgent ? 1.75 : 1.35,
+        wantFocus: game.power < 128,
+        wantPoc: true,
+        aggressive: true,
+        enemy,
+        itemGoal: true,
+        urgent,
+        itemCount: items.length,
+        itemValue: total,
+        items: weighted.slice(0, 14).map((entry) => entry.item)
+      };
+    }
+    const direct = weighted[0].item;
+    return {
+      x: clamp(direct.x, MOVE_AREA.x, MOVE_AREA.right),
+      y: clamp(direct.y + 10, 104, MOVE_AREA.bottom),
+      weight: 1.1,
+      wantFocus: false,
+      wantPoc: false,
+      aggressive: false,
+      enemy,
+      itemGoal: true,
+      urgent: maxY > 320,
+      itemCount: items.length,
+      itemValue: total,
+      items: weighted.slice(0, 8).map((entry) => entry.item)
+    };
+  }
+  target(game, riskNow) {
+    const enemies = (game.enemies || []).filter((e) => game.enemyCanBeTargeted?.(e));
+    const enemy = enemies
+      .slice()
+      .sort((a, b) => this.enemyPriority(game, b) - this.enemyPriority(game, a))[0];
+    const items = this.activeItems(game);
+    const itemGoal = this.itemGoal(game, items, enemy, riskNow);
+    if (itemGoal && (itemGoal.urgent || !enemy || itemGoal.wantPoc || itemGoal.itemValue > 420)) return itemGoal;
+    if (enemy) {
+      const boss = !!enemy.ecl?.isBoss;
+      return {
+        x: clamp(enemy.x, 32, 352),
+        y: boss ? 320 : clamp(enemy.y + (enemy.hp > 1200 ? 64 : 44), 64, 236),
+        weight: boss ? 1.05 : 1.85,
+        wantFocus: false,
+        wantPoc: false,
+        aggressive: !boss,
+        enemy
+      };
+    }
+    if (items.length) {
+      const nearest = items
+        .slice()
+        .sort((a, b) => Math.hypot(a.x - game.player.x, a.y - game.player.y) - Math.hypot(b.x - game.player.x, b.y - game.player.y))[0];
+      return { x: nearest.x, y: nearest.y, weight: 0.95, wantFocus: false, wantPoc: false, aggressive: false, enemy: null };
+    }
+    return { x: 192, y: 360, weight: 0.7, wantFocus: false, wantPoc: false, aggressive: false, enemy: null };
+  }
+  enemyPriority(game, enemy) {
+    const boss = enemy.ecl?.isBoss ? 10000 : 0;
+    const leavingSoon = Math.max(0, enemy.y - 260) * 5;
+    const closeX = 240 - Math.min(240, Math.abs(enemy.x - game.player.x));
+    const lowHp = Math.max(0, 800 - (enemy.hp || 0)) * 0.08;
+    return boss + enemy.y * 4 + closeX + leavingSoon + lowHp;
+  }
+  bestSafePoint(game, target, riskNow = this.risk(game, { x: game.player.x, y: game.player.y })) {
+    let best = {
+      x: clamp(target.x, MOVE_AREA.x, MOVE_AREA.right),
+      y: clamp(target.y, MOVE_AREA.y, MOVE_AREA.bottom),
+      weight: target.weight,
+      score: -this.risk(game, target, [0, 6, 12, 24, 36], 220).score
+    };
+    const danger = riskNow.score > 700 || riskNow.lethal;
+    const xs = danger ? [24, 56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376]
+      : [48, 96, 144, 192, 240, 288, 336];
+    const ys = danger ? [56, 88, 120, 152, 184, 216, 248, 280, 312, 344, 376, 416]
+      : [80, 112, 144, 176, 224, 272, 336, 400];
+    const localOffsets = [-96, -64, -32, 0, 32, 64, 96];
+    const points = [];
+    for (const x of xs) for (const y of ys) points.push({ x, y });
+    for (const ox of localOffsets) {
+      for (const oy of localOffsets) {
+        points.push({
+          x: clamp(game.player.x + ox, MOVE_AREA.x, MOVE_AREA.right),
+          y: clamp(game.player.y + oy, MOVE_AREA.y, MOVE_AREA.bottom)
+        });
+      }
+    }
+    points.push({ x: best.x, y: best.y }, { x: game.player.x, y: game.player.y });
+    if (target.itemGoal) {
+      points.push({ x: target.x, y: target.y });
+      for (const item of target.items || []) {
+        points.push(
+          { x: clamp(item.x, MOVE_AREA.x, MOVE_AREA.right), y: clamp(item.y + 10, MOVE_AREA.y, MOVE_AREA.bottom) },
+          { x: clamp(item.x, MOVE_AREA.x, MOVE_AREA.right), y: ITEM_GET_BORDER_Y - 24 }
+        );
+      }
+    }
+    for (const point of points) {
+      const risk = this.risk(game, point, [0, 6, 12, 24, 36], 220);
+      const dist = Math.hypot(point.x - target.x, point.y - target.y);
+      const lineUp = target.enemy ? Math.abs(point.x - target.enemy.x) : 0;
+      const pocBonus = target.wantPoc && point.y < ITEM_GET_BORDER_Y ? Math.min(520, 90 + (target.itemValue || 0) * 0.12 + (target.itemCount || 0) * 42) : 0;
+      const itemBonus = target.itemGoal ? this.itemPointScore(game, point, target) : 0;
+      const chaseBonus = target.aggressive && !risk.lethal ? Math.max(0, 260 - point.y) * 0.42 : 0;
+      const grazeBonus = danger || risk.score > 450 ? 0 : this.grazeReward(game, point, [0, 6, 12], 160) * 0.2;
+      let score = -risk.score - dist * target.weight - lineUp * 0.22 + pocBonus + itemBonus + chaseBonus + grazeBonus - this.wallPenalty(point);
+      if (risk.lethal) score -= 50000;
+      if (score > best.score) best = { ...point, score, risk, weight: danger ? 1.8 : target.weight };
+    }
+    return {
+      x: clamp(best.x, MOVE_AREA.x, MOVE_AREA.right),
+      y: clamp(best.y, MOVE_AREA.y, MOVE_AREA.bottom),
+      weight: best.weight || target.weight || 1
+    };
+  }
+  projectPath(game, candidate) {
+    const spec = game.spec();
+    let speed = candidate.focus ? spec.focus : spec.speed;
+    if (candidate.dx && candidate.dy) speed /= Math.sqrt(2);
+    const path = [];
+    for (const t of [1, 4, 8, 12, 18, 26, 36, 48]) {
+      path.push({
+        t,
+        x: clamp(game.player.x + candidate.dx * speed * t, MOVE_AREA.x, MOVE_AREA.right),
+        y: clamp(game.player.y + candidate.dy * speed * t, MOVE_AREA.y, MOVE_AREA.bottom)
+      });
+    }
+    return path;
+  }
+  pathRisk(game, path) {
+    let score = 0;
+    let lethal = false;
+    for (const point of path) {
+      const risk = this.risk(game, point, [point.t], 64 + point.t * 2);
+      score += risk.score / Math.max(1, point.t * 0.45);
+      lethal ||= risk.lethal && point.t <= 18;
+    }
+    return { score, lethal };
+  }
+  itemPointScore(game, pos, target) {
+    if (!target.items?.length) return 0;
+    let score = 0;
+    for (const item of target.items) {
+      const weight = this.itemWeight(item, game);
+      const dist = Math.hypot(pos.x - item.x, pos.y - item.y);
+      score += Math.max(0, 124 - dist) * weight * 0.012;
+      if (target.wantPoc && pos.y < ITEM_GET_BORDER_Y && (game.power >= 128 || target.wantFocus)) score += weight * 0.055;
+      if (Math.abs(pos.x - item.x) <= PLAYER_ITEM_GRAB_HALF.x + ITEM_HITBOX_HALF + 6 && Math.abs(pos.y - item.y) <= PLAYER_ITEM_GRAB_HALF.y + ITEM_HITBOX_HALF + 6) score += weight * 0.25;
+    }
+    return Math.min(score, 560);
+  }
+  itemReward(game, candidate, future, target) {
+    if (!target.itemGoal) return 0;
+    let score = this.itemPointScore(game, candidate, target) * 0.8 + this.itemPointScore(game, future, target) * 0.55;
+    if (target.wantPoc && future.y < ITEM_GET_BORDER_Y && (game.power >= 128 || candidate.focus)) {
+      score += Math.min(620, 120 + (target.itemValue || 0) * 0.16 + (target.itemCount || 0) * 45);
+    }
+    if (target.urgent && candidate.dy < 0) score += 36;
+    return score;
+  }
+  pathGrazeReward(game, path) {
+    let score = 0;
+    for (const point of path.slice(0, 6)) {
+      score += this.grazeReward(game, point, [point.t], 128 + point.t) / Math.max(1, point.t * 0.55);
+    }
+    return Math.min(score, 260);
+  }
+  grazeReward(game, pos, times = [0], margin = 140) {
+    let reward = 0;
+    for (const bullet of game.enemyBullets || []) {
+      if (bullet.grazed) continue;
+      if (bullet.collisionActive === false && (bullet.spawnDuration || 0) - (bullet.spawnAge || 0) > 18) continue;
+      const half = game.enemyBulletHalfSize?.(bullet) || { x: bullet.r || 4, y: bullet.r || 4 };
+      const maxSpeed = Math.hypot(bullet.vx || 0, bullet.vy || 0);
+      if (Math.abs(bullet.x - pos.x) > margin + maxSpeed * 42 || Math.abs(bullet.y - pos.y) > margin + maxSpeed * 42) continue;
+      for (const t of times) {
+        const bx = bullet.x + (bullet.vx || 0) * t;
+        const by = bullet.y + (bullet.vy || 0) * t;
+        const dx = Math.abs(pos.x - bx) - half.x - PLAYER_HITBOX_HALF.x;
+        const dy = Math.abs(pos.y - by) - half.y - PLAYER_HITBOX_HALF.y;
+        if (dx <= 0 && dy <= 0) continue;
+        if (dx > PLAYER_GRAZE_PADDING || dy > PLAYER_GRAZE_PADDING) continue;
+        const gap = Math.max(0, dx, dy);
+        if (gap < 2.2) continue;
+        reward += Math.max(0, PLAYER_GRAZE_PADDING + 4 - gap) * 2.8 / (1 + t * 0.08);
+      }
+    }
+    for (const laser of game.enemyLasers || []) {
+      if (!laser.inUse) continue;
+      const local = game.laserLocal?.(laser, pos);
+      if (!local) continue;
+      const length = Math.max(0, (laser.endOffset || 0) - (laser.startOffset || 0));
+      const center = (laser.startOffset || 0) + length / 2;
+      const halfLen = Math.max(0, laser.hitboxLength || length) / 2;
+      const halfWidth = Math.max(0.5, (laser.width || 0) / 4);
+      const activeSoon = laser.canHit || laser.canGraze || laser.state === 1 || (laser.state === 0 && laser.timer >= (laser.hitboxStartTime || 0) - 18);
+      if (!activeSoon) continue;
+      const alongGap = Math.abs(local.along - center) - halfLen - PLAYER_HITBOX_HALF.x;
+      const perpGap = Math.abs(local.perp) - halfWidth - PLAYER_HITBOX_HALF.y;
+      if (alongGap <= 0 && perpGap <= 0) continue;
+      if (alongGap <= 48 && perpGap <= 48) {
+        const gap = Math.max(0, alongGap, perpGap);
+        if (gap >= 3) reward += Math.max(0, 52 - gap) * 1.8;
+      }
+    }
+    return Math.min(reward, 320);
+  }
+  escapeScore(game, pos, riskNow) {
+    const offsets = [
+      [0, 0], [-36, 0], [36, 0], [0, -36], [0, 36],
+      [-36, -36], [36, -36], [-36, 36], [36, 36],
+      [-72, 0], [72, 0], [0, -72], [0, 72]
+    ];
+    let open = 0;
+    let bestRisk = Infinity;
+    for (const [ox, oy] of offsets) {
+      const sample = {
+        x: clamp(pos.x + ox, MOVE_AREA.x, MOVE_AREA.right),
+        y: clamp(pos.y + oy, MOVE_AREA.y, MOVE_AREA.bottom)
+      };
+      const risk = this.risk(game, sample, [4, 10, 18, 30], 132);
+      bestRisk = Math.min(bestRisk, risk.score);
+      if (!risk.lethal && risk.score < 900) open += 1 + clamp((900 - risk.score) / 900, 0, 1);
+    }
+    const sealedPenalty = open < 3 ? 120 * (3 - open) : 0;
+    const dangerBonus = riskNow.lethal || riskNow.score > 1200 ? open * 8 : open * 4;
+    return dangerBonus + open * 10 - Math.min(180, bestRisk * 0.035) - sealedPenalty - this.wallPenalty(pos) * 0.45;
+  }
+  wallPenalty(pos) {
+    const left = pos.x - MOVE_AREA.x;
+    const right = MOVE_AREA.right - pos.x;
+    const top = pos.y - MOVE_AREA.y;
+    const bottom = MOVE_AREA.bottom - pos.y;
+    const xGap = Math.min(left, right);
+    const yGap = Math.min(top, bottom);
+    return Math.max(0, 28 - xGap) * 5 + Math.max(0, 24 - yGap) * 4;
+  }
+  risk(game, pos, times = [0, 4, 8, 12, 18, 26, 36], margin = 160) {
+    let score = 0;
+    let lethal = false;
+    for (const bullet of game.enemyBullets || []) {
+      if (bullet.collisionActive === false && (bullet.spawnDuration || 0) - (bullet.spawnAge || 0) > 18) continue;
+      const half = game.enemyBulletHalfSize?.(bullet) || { x: bullet.r || 4, y: bullet.r || 4 };
+      const maxSpeed = Math.hypot(bullet.vx || 0, bullet.vy || 0);
+      if (Math.abs(bullet.x - pos.x) > margin + maxSpeed * 50 || Math.abs(bullet.y - pos.y) > margin + maxSpeed * 50) continue;
+      for (const t of times) {
+        const bx = bullet.x + (bullet.vx || 0) * t;
+        const by = bullet.y + (bullet.vy || 0) * t;
+        const dx = Math.abs(pos.x - bx) - half.x - PLAYER_HITBOX_HALF.x;
+        const dy = Math.abs(pos.y - by) - half.y - PLAYER_HITBOX_HALF.y;
+        if (dx <= 0 && dy <= 0) {
+          lethal = true;
+          score += 100000 / (t + 1);
+          continue;
+        }
+        const gap = Math.hypot(Math.max(0, dx), Math.max(0, dy));
+        score += Math.max(0, 900 - gap * 28) / (t + 1.25);
+      }
+    }
+    for (const laser of game.enemyLasers || []) {
+      if (!laser.inUse) continue;
+      const local = game.laserLocal?.(laser, pos);
+      if (!local) continue;
+      const length = Math.max(0, (laser.endOffset || 0) - (laser.startOffset || 0));
+      const center = (laser.startOffset || 0) + length / 2;
+      const halfLen = Math.max(0, laser.hitboxLength || length) / 2;
+      const halfWidth = Math.max(0.5, (laser.width || 0) / 4);
+      const activeSoon = laser.canHit || laser.state === 1 || (laser.state === 0 && laser.timer >= (laser.hitboxStartTime || 0) - 18);
+      if (!activeSoon) continue;
+      const alongGap = Math.abs(local.along - center) - halfLen - PLAYER_HITBOX_HALF.x;
+      const perpGap = Math.abs(local.perp) - halfWidth - PLAYER_HITBOX_HALF.y;
+      if (alongGap <= 0 && perpGap <= 0) {
+        lethal = true;
+        score += 120000;
+      } else {
+        const gap = Math.hypot(Math.max(0, alongGap), Math.max(0, perpGap));
+        score += Math.max(0, 1800 - gap * 42);
+      }
+    }
+    for (const enemy of game.enemies || []) {
+      if (!game.enemyCanBeTargeted?.(enemy) || enemy.ecl?.isBoss) continue;
+      const box = game.enemyBox(enemy);
+      const dx = Math.abs(pos.x - enemy.x) - box.w / 2 - 12;
+      const dy = Math.abs(pos.y - enemy.y) - box.h / 2 - 12;
+      if (dx <= 0 && dy <= 0) score += 15000;
+    }
+    return { score, lethal };
+  }
+}
+
 class Game {
   constructor() {
     this.rng = new Rng();
     this.phase = 'title';
     this.selected = 0;
+    this.titleSelected = 0;
+    this.pendingAutoplay = false;
+    this.autoplayMode = false;
+    this.autoplay = new AutoplayController();
     this.track = null;
     this.audio = null;
     this.stages = window.TH06_EMBEDDED_DATA?.games?.th06?.stages;
@@ -539,6 +1015,8 @@ class Game {
     };
   }
   reset() {
+    this.autoplayMode = false;
+    this.autoplay?.reset();
     this.score = 0;
     this.hiScore = 100000;
     this.power = 0;
@@ -573,7 +1051,13 @@ class Game {
       focus: false,
       focusT: 0,
       shotFrame: -1,
-      laserTimers: [0, 0]
+      laserTimers: [0, 0],
+      animScript: ANM_SCRIPT_PLAYER_IDLE,
+      animFrame: 0,
+      animDrawFrame: 0,
+      prevHorizontalSpeed: 0,
+      prevVerticalSpeed: 0,
+      hitEffectCounter: 0
     };
     this.playerBullets = [];
     this.enemyBullets = [];
@@ -588,6 +1072,7 @@ class Game {
     this.activeBombs = [];
     this.pendingEnemyDamage = new Map();
     this.spellcardInfo = { isActive: false, isCapturing: false, usedBomb: false };
+    this.timeStopped = false;
     this.stageClearResult = null;
     this.stageTransition = null;
     this.dialogue = null;
@@ -623,8 +1108,12 @@ class Game {
       spellIndex: -1
     };
   }
-  start() {
+  start(options = {}) {
+    const autoplay = !!options.autoplay;
     this.reset();
+    this.autoplayMode = autoplay;
+    this.pendingAutoplay = autoplay;
+    this.autoplay?.reset();
     this.phase = 'playing';
     this.startStageBgm();
   }
@@ -639,6 +1128,7 @@ class Game {
   startNextStage() {
     this.loadStage(this.currentStageNumber + 1);
     this.resetStageState();
+    if (this.autoplayMode) this.autoplay?.reset();
     this.stageEntryFade = STAGE_ENTRY_FADE_FRAMES;
     this.phase = 'playing';
     this.startStageBgm();
@@ -716,6 +1206,7 @@ class Game {
     for (const drop of drops) this.spawnItem(drop, this.player.x, this.player.y, { state: 2 });
   }
   update(input) {
+    input = this.autoplay?.nextInput(this, input) || input;
     if (this.phase === 'stageTransition') return this.updateStageTransition(input);
     if (this.phase !== 'playing') return this.updateMenu(input);
     if (input.pressed.has('menu')) {
@@ -747,19 +1238,25 @@ class Game {
     this.stageRuntime.update(this);
     this.updateDialogue(input);
     if (this.spellcardInfo?.isActive) this.spellcardInfo.frame = (this.spellcardInfo.frame || 0) + 1;
-    this.updatePlayer(input);
+    const frozenByTimeStop = !!this.timeStopped;
+    if (frozenByTimeStop) this.player.shotFrame = -1;
+    else this.updatePlayer(input);
     this.updateEnemies();
     this.frameHomingTarget = this.lastEnemyHit;
     this.lastEnemyHit = { x: -999, y: -999 };
     this.pendingEnemyDamage.clear();
-    this.updateBombs();
-    this.updatePlayerBullets();
-    this.flushEnemyDamage();
+    if (!frozenByTimeStop) {
+      this.updateBombs();
+      this.updatePlayerBullets();
+      this.flushEnemyDamage();
+    }
     this.frameHomingTarget = null;
-    this.updateEnemyBullets();
-    this.updateEnemyLasers();
+    if (!frozenByTimeStop) {
+      this.updateEnemyBullets();
+      this.updateEnemyLasers();
+    }
     this.refreshHomingTargetFromEnemies();
-    this.updateItems();
+    if (!frozenByTimeStop) this.updateItems();
     this.updateTexts();
     this.updateEffects();
     this.updateBossUi();
@@ -814,9 +1311,23 @@ class Game {
     const confirm = input.pressed.has('confirm') || input.pressed.has('shoot');
     const back = input.pressed.has('back') || input.pressed.has('menu');
     const move = input.pressed.has('left') || input.pressed.has('right') || input.pressed.has('up') || input.pressed.has('down');
-    if (this.phase === 'title' && confirm) {
-      this.audio?.sfx(SOUND.SELECT);
-      this.phase = 'difficulty';
+    if (this.phase === 'title') {
+      if (input.pressed.has('up')) {
+        this.moveTitleSelection(-1);
+        this.audio?.sfx(SOUND.MOVE_MENU);
+      }
+      if (input.pressed.has('down')) {
+        this.moveTitleSelection(1);
+        this.audio?.sfx(SOUND.MOVE_MENU);
+      }
+      if (confirm) {
+        const option = TITLE_MENU_ITEMS[this.titleSelected];
+        if (option?.enabled) {
+          this.pendingAutoplay = option.id === 'autoplay';
+          this.audio?.sfx(SOUND.SELECT);
+          this.phase = 'difficulty';
+        }
+      }
     }
     else if (this.phase === 'difficulty') {
       if (back) {
@@ -842,7 +1353,7 @@ class Game {
       }
       else if (confirm && this.isCharacterEnabled()) {
         this.audio?.sfx(SOUND.SELECT);
-        this.start();
+        this.start({ autoplay: this.pendingAutoplay });
       }
     } else if (this.phase === 'paused') {
       if (back || confirm) {
@@ -863,6 +1374,13 @@ class Game {
     }
     if (move && this.phase === 'difficulty') this.audio?.sfx(SOUND.MOVE_MENU);
   }
+  moveTitleSelection(dir) {
+    for (let i = 0; i < TITLE_MENU_ITEMS.length; i++) {
+      this.titleSelected = (this.titleSelected + dir + TITLE_MENU_ITEMS.length) % TITLE_MENU_ITEMS.length;
+      if (TITLE_MENU_ITEMS[this.titleSelected]?.enabled) return;
+    }
+    this.titleSelected = 0;
+  }
   spec() {
     return chars[this.selected];
   }
@@ -875,6 +1393,38 @@ class Game {
       if (this.isCharacterEnabled()) return;
     }
     this.selected = 0;
+  }
+  playerAnm() {
+    return this.stageRuntime?.playerAnm?.[this.spec().family === 'marisa' ? 1 : 0];
+  }
+  setPlayerAnimScript(scriptId) {
+    if (!this.player) return;
+    if (this.player.animScript === scriptId) return;
+    this.player.animScript = scriptId;
+    this.player.animFrame = 0;
+    this.player.animDrawFrame = 0;
+  }
+  updatePlayerMovementAnimation(horizontalSpeed, verticalSpeed) {
+    const prevX = this.player.prevHorizontalSpeed || 0;
+    if (horizontalSpeed < 0 && prevX >= 0) this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_MOVING_LEFT);
+    else if (horizontalSpeed === 0 && prevX < 0) this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_STOPPING_LEFT);
+    if (horizontalSpeed > 0 && prevX <= 0) this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_MOVING_RIGHT);
+    else if (horizontalSpeed === 0 && prevX > 0) this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_STOPPING_RIGHT);
+    this.player.prevHorizontalSpeed = horizontalSpeed;
+    this.player.prevVerticalSpeed = verticalSpeed;
+  }
+  advancePlayerAnimation() {
+    const anm = this.playerAnm();
+    const script = this.player.animScript ?? ANM_SCRIPT_PLAYER_IDLE;
+    const frame = this.player.animFrame || 0;
+    const rect = anm?.scriptFrame(script, 0, frame);
+    if ((!rect || rect.done) && script !== ANM_SCRIPT_PLAYER_IDLE) {
+      this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
+      this.player.animDrawFrame = 0;
+      return;
+    }
+    this.player.animDrawFrame = frame;
+    this.player.animFrame = frame + 1;
   }
   orbs() {
     if (this.power < 8) return null;
@@ -1106,17 +1656,23 @@ class Game {
     let speed = this.player.focus ? spec.focus : spec.speed;
     if (this.activeBombs.some((bomb) => bomb.type === 'marisaB')) speed *= 0.3;
     speed /= dx && dy ? Math.sqrt(2) : 1;
+    const horizontalSpeed = dx * speed;
+    const verticalSpeed = dy * speed;
+    this.updatePlayerMovementAnimation(horizontalSpeed, verticalSpeed);
     this.player.x = clamp(this.player.x + dx * speed, MOVE_AREA.x, MOVE_AREA.right);
     this.player.y = clamp(this.player.y + dy * speed, MOVE_AREA.y, MOVE_AREA.bottom);
-    if (input.pressed.has('bomb') && this.bombs > 0 && this.activeBombs.length === 0) this.bomb();
+    const actionLocked = !!this.dialogue?.active;
+    if (!actionLocked && input.pressed.has('bomb') && this.bombs > 0 && this.activeBombs.length === 0) this.bomb();
     const shootHeld = input.held.has('shoot');
     if (!shootHeld) this.player.shotFrame = -1;
+    else if (actionLocked) this.player.shotFrame = -1;
     else if (this.player.shotFrame < 0) this.player.shotFrame = 0;
     if (shootHeld && this.player.shotFrame >= 0) {
       if (!this.activeBombs.some((bomb) => bomb.type === 'marisaB')) this.shoot();
       this.player.shotFrame++;
       if (this.player.shotFrame >= 30) this.player.shotFrame = -1;
     }
+    this.advancePlayerAnimation();
   }
   updatePlayerDeathbomb(input) {
     this.player.deathbombFrame++;
@@ -1161,6 +1717,9 @@ class Game {
     this.player.deathbombFrame = 0;
     this.player.deathDropsDone = false;
     this.player.shotFrame = -1;
+    this.player.prevHorizontalSpeed = 0;
+    this.player.prevVerticalSpeed = 0;
+    this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
     this.enemyBullets = [];
     for (const l of this.enemyLasers) l.inUse = false;
     this.enemyLasers = [];
@@ -1174,6 +1733,10 @@ class Game {
     this.player.focus = false;
     this.player.focusT = clamp(this.player.focusT - 1, 0, 8);
     this.player.shotFrame = -1;
+    this.player.prevHorizontalSpeed = 0;
+    this.player.prevVerticalSpeed = 0;
+    this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
+    this.advancePlayerAnimation();
     if (this.player.spawnFrame >= PLAYER_SPAWN_ANIM_FRAMES) {
       this.player.state = 'invuln';
       this.player.invuln = PLAYER_RESPAWN_INVULN;
@@ -1301,11 +1864,28 @@ class Game {
     if (e.ecl?.hitbox) return { w: Math.max(1, e.ecl.hitbox.x), h: Math.max(1, e.ecl.hitbox.y) };
     return { w: Math.max(1, e.radius * 2), h: Math.max(1, e.radius * 2) };
   }
+  enemySpriteSize(e) {
+    const rect = e.ecl ? this.stageRuntime?.enemyRect(e) : null;
+    if (rect) return { w: Math.max(1, rect.w), h: Math.max(1, rect.h) };
+    return this.enemyBox(e);
+  }
+  enemyInArcadeBounds(e) {
+    const size = this.enemySpriteSize(e);
+    return this.inArcadeBounds(e.x, e.y, size.w, size.h);
+  }
+  enemyCanBeTargeted(e) {
+    if (!e || e.dead || e.hp <= 0) return false;
+    if (e.ecl) {
+      if (!e.ecl.seen || !e.ecl.canTakeDamage || !e.ecl.interactable) return false;
+    }
+    return this.enemyInArcadeBounds(e);
+  }
   overlapsBox(cx, cy, w, h, e) {
     const box = this.enemyBox(e);
     return Math.abs(cx - e.x) <= (w + box.w) / 2 && Math.abs(cy - e.y) <= (h + box.h) / 2;
   }
   damageEnemy(e, damage, source = 'shot') {
+    if (e.ecl && !e.ecl.seen) return 0;
     if (e.ecl && (!e.ecl.canTakeDamage || !e.ecl.interactable)) return 0;
     const raw = source === 'shot'
       ? TH06_LOGIC.playerShotDamageForEnemy(damage, this.activeBombs.length > 0)
@@ -1337,12 +1917,20 @@ class Game {
   damageEnemiesInBox(x, y, w, h, damage, source = 'bomb') {
     let total = 0;
     for (const e of this.enemies) {
-      if (this.overlapsBox(x, y, w, h, e)) total += this.damageEnemy(e, damage, source);
+      if (!this.overlapsBox(x, y, w, h, e)) continue;
+      const applied = this.damageEnemy(e, damage, source);
+      total += applied;
+      if (applied > 0 && source.startsWith('bomb')) this.bombHitEffect(e);
     }
     return total;
   }
+  bombHitEffect(enemy) {
+    this.player.hitEffectCounter = (this.player.hitEffectCounter || 0) + 1;
+    if (this.player.hitEffectCounter % 4 !== 0) return;
+    this.spawnEffectParticles(3, enemy.x, enemy.y, 1, 0xffffffff);
+  }
   refreshHomingTargetFromEnemies() {
-    this.lastEnemyHit = TH06_LOGIC.chooseHomingTarget(this.enemies);
+    this.lastEnemyHit = TH06_LOGIC.chooseHomingTarget(this.enemies.filter((e) => this.enemyCanBeTargeted(e)));
   }
   enemyDeathSound(enemy) {
     return SOUND.ENEMY_DEAD + ((enemy?.id || 0) & 1);
@@ -1409,6 +1997,7 @@ class Game {
           this.damageEnemy(e, b.damage, 'shot');
           if (b.bulletType === BULLET_TYPE_ACCEL) this.applyMarisaAStarHit(b);
           if (b.bulletType !== BULLET_TYPE_LASER) this.collidePlayerBullet(b);
+          else this.playerLaserHitEffect(b, e);
           if (b.bulletType !== BULLET_TYPE_ACCEL) break;
         }
       }
@@ -1426,6 +2015,11 @@ class Game {
     b.x = src.x + (b.sourceOffsetX || 0);
     b.y = src.y / 2 + b.vy;
     b.sy = Math.max(1, src.y);
+  }
+  playerLaserHitEffect(b, enemy) {
+    this.player.hitEffectCounter = (this.player.hitEffectCounter || 0) + 1;
+    if (this.player.hitEffectCounter % 8 !== 0) return;
+    this.spawnEffectParticles(5, b.x, enemy.y, 1, 0xffffffff);
   }
   playerBulletAnm(b) {
     return this.stageRuntime?.playerAnm?.[b.family === 'marisa' ? 1 : 0];
@@ -1717,19 +2311,21 @@ class Game {
       }
       item.x += item.vx;
       item.y += item.vy;
+      if (item.y >= ITEM_DESPAWN_Y) {
+        if (!item.missed) {
+          item.missed = true;
+          this.decreaseSubrank(3);
+        }
+        item.dead = true;
+        continue;
+      }
       const canCollect = this.player.state === 'alive' || this.player.state === 'invuln';
       if (canCollect && Math.abs(item.x - this.player.x) <= PLAYER_ITEM_GRAB_HALF.x + ITEM_HITBOX_HALF && Math.abs(item.y - this.player.y) <= PLAYER_ITEM_GRAB_HALF.y + ITEM_HITBOX_HALF) {
         this.collect(item);
-        item.y = 9999;
+        item.dead = true;
       }
     }
-    for (const item of this.items) {
-      if (!item.missed && item.y >= PLAYFIELD.height + 16) {
-        item.missed = true;
-        this.decreaseSubrank(3);
-      }
-    }
-    this.items = this.items.filter((i) => i.y < 512);
+    this.items = this.items.filter((i) => !i.dead && i.y < ITEM_DESPAWN_Y);
   }
   attractAllItems() {
     for (const item of this.items) {
@@ -1809,6 +2405,9 @@ class Game {
     this.player.deathFrame = 0;
     this.player.deathDropsDone = false;
     this.player.shotFrame = -1;
+    this.player.prevHorizontalSpeed = 0;
+    this.player.prevVerticalSpeed = 0;
+    this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
     this.flash = Math.max(this.flash, 8);
     this.spawnEffectParticles(8, this.player.x, this.player.y, 1, 0xffff80ff);
   }
@@ -1824,6 +2423,10 @@ class Game {
     this.player.deathbombFrame = 0;
     this.player.deathDropsDone = false;
     this.player.shotFrame = -1;
+    this.player.laserTimers = this.player.laserTimers.map(() => 2);
+    this.player.prevHorizontalSpeed = 0;
+    this.player.prevVerticalSpeed = 0;
+    this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
     this.activeBombs = [];
     if (immediatePenalty) {
       this.applyMissPenalty();
@@ -1846,6 +2449,7 @@ class Game {
     } : null;
     this.fadeOutBgm(4);
     this.setBossPresent(false);
+    this.timeStopped = false;
     this.enemyBullets = [];
     for (const l of this.enemyLasers) l.inUse = false;
     this.enemyLasers = [];
@@ -1887,10 +2491,10 @@ class Game {
   out(e) {
     if (e.ecl) {
       if (e.ecl.isBoss || !e.ecl.seen) return false;
-      return e.x < -80 || e.x > 464 || e.y < -96 || e.y > 544;
+      return !this.enemyInArcadeBounds(e);
     }
-    if (e.kind === 'boss' || e.kind === 'midboss') return e.y < -96 || e.y > 544;
-    return e.x < -80 || e.x > 464 || e.y > 528;
+    if (e.kind === 'boss' || e.kind === 'midboss') return !this.enemyInArcadeBounds(e);
+    return !this.enemyInArcadeBounds(e);
   }
   text(text, x, y, life, color) {
     this.texts.push({ id: this.id++, text, x, y, life, age: 0, color });
@@ -2096,6 +2700,251 @@ class Game {
   }
 }
 
+class StageWebGLRenderer {
+  constructor() {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = PLAYFIELD.width;
+    this.canvas.height = PLAYFIELD.height;
+    this.gl = this.canvas.getContext('webgl', {
+      alpha: true,
+      antialias: false,
+      depth: true,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true
+    });
+    this.ready = false;
+    if (!this.gl) return;
+    try {
+      this.init();
+      this.ready = true;
+    } catch {
+      this.ready = false;
+    }
+  }
+  init() {
+    const gl = this.gl;
+    const vertexSource = `
+      attribute vec4 a_clip;
+      attribute vec2 a_uv;
+      attribute vec4 a_color;
+      attribute float a_depth;
+      varying vec2 v_uv;
+      varying vec4 v_color;
+      varying float v_depth;
+      void main() {
+        gl_Position = a_clip;
+        v_uv = a_uv;
+        v_color = a_color;
+        v_depth = a_depth;
+      }
+    `;
+    const fragmentSource = `
+      precision mediump float;
+      uniform sampler2D u_texture;
+      uniform vec3 u_fogColor;
+      uniform float u_fogNear;
+      uniform float u_fogFar;
+      varying vec2 v_uv;
+      varying vec4 v_color;
+      varying float v_depth;
+      void main() {
+        vec4 tex = texture2D(u_texture, v_uv);
+        if (tex.a <= 0.01) discard;
+        vec4 color = tex * v_color;
+        float fogRange = max(1.0, u_fogFar - u_fogNear);
+        float fog = clamp((v_depth - u_fogNear) / fogRange, 0.0, 1.0) * 0.55;
+        color.rgb = mix(color.rgb, u_fogColor, fog);
+        gl_FragColor = color;
+      }
+    `;
+    this.program = this.createProgram(vertexSource, fragmentSource);
+    gl.useProgram(this.program);
+    this.buffer = gl.createBuffer();
+    this.aClip = gl.getAttribLocation(this.program, 'a_clip');
+    this.aUv = gl.getAttribLocation(this.program, 'a_uv');
+    this.aColor = gl.getAttribLocation(this.program, 'a_color');
+    this.aDepth = gl.getAttribLocation(this.program, 'a_depth');
+    this.uTexture = gl.getUniformLocation(this.program, 'u_texture');
+    this.uFogColor = gl.getUniformLocation(this.program, 'u_fogColor');
+    this.uFogNear = gl.getUniformLocation(this.program, 'u_fogNear');
+    this.uFogFar = gl.getUniformLocation(this.program, 'u_fogFar');
+    this.stride = 11 * 4;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    const stride = this.stride;
+    gl.enableVertexAttribArray(this.aClip);
+    gl.vertexAttribPointer(this.aClip, 4, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(this.aUv);
+    gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, stride, 4 * 4);
+    gl.enableVertexAttribArray(this.aColor);
+    gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 6 * 4);
+    gl.enableVertexAttribArray(this.aDepth);
+    gl.vertexAttribPointer(this.aDepth, 1, gl.FLOAT, false, stride, 10 * 4);
+    gl.uniform1i(this.uTexture, 0);
+  }
+  createShader(type, source) {
+    const gl = this.gl;
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) || 'shader compile failed');
+    return shader;
+  }
+  createProgram(vertexSource, fragmentSource) {
+    const gl = this.gl;
+    const program = gl.createProgram();
+    gl.attachShader(program, this.createShader(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, this.createShader(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'program link failed');
+    return program;
+  }
+  healthy() {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost?.()) {
+      this.ready = false;
+      return false;
+    }
+    const err = gl.getError();
+    if (err && err !== gl.NO_ERROR) {
+      this.ready = false;
+      return false;
+    }
+    return true;
+  }
+  ensureTexture(image) {
+    const gl = this.gl;
+    if (this.texture && this.textureImage === image) return true;
+    if (!image?.complete || !image.naturalWidth) return false;
+    if (!this.texture) this.texture = gl.createTexture();
+    this.textureImage = image;
+    if (!this.uploadCanvas) {
+      this.uploadCanvas = document.createElement('canvas');
+      this.uploadCtx = this.uploadCanvas.getContext('2d', { alpha: true });
+    }
+    this.uploadCanvas.width = image.naturalWidth;
+    this.uploadCanvas.height = image.naturalHeight;
+    this.uploadCtx.clearRect(0, 0, this.uploadCanvas.width, this.uploadCanvas.height);
+    this.uploadCtx.drawImage(image, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.uploadCanvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    return this.healthy();
+  }
+  projectClip(world, camera) {
+    const dx = world.x - camera.eye.x;
+    const dy = world.y - camera.eye.y;
+    const dz = world.z - camera.eye.z;
+    const vx = dx * camera.right.x + dy * camera.right.y + dz * camera.right.z;
+    const vy = dx * camera.up.x + dy * camera.up.y + dz * camera.up.z;
+    const vz = dx * camera.forward.x + dy * camera.forward.y + dz * camera.forward.z;
+    if (vz <= 1) return null;
+    const ndcX = (vx * camera.xScale) / vz;
+    const ndcY = (vy * camera.yScale) / vz;
+    const zNdc = clamp((vz - 100) / (10000 - 100), 0, 1) * 2 - 1;
+    return { x: ndcX * vz, y: ndcY * vz, z: zNdc * vz, w: vz, depth: vz };
+  }
+  quadVerticesFromScreen(rect, corners, image) {
+    const sx0 = rect.x / image.naturalWidth;
+    const sx1 = (rect.x + rect.w) / image.naturalWidth;
+    const sy0 = rect.y / image.naturalHeight;
+    const sy1 = (rect.y + rect.h) / image.naturalHeight;
+    const c = colorParts(rect.color ?? 0xffffffff);
+    const alpha = (rect.alpha ?? Math.round(c.a * 255)) / 255;
+    const color = [c.r / 255, c.g / 255, c.b / 255, alpha];
+    const points = [
+      { ...corners.tl, u: sx0, v: sy0 },
+      { ...corners.tr, u: sx1, v: sy0 },
+      { ...corners.bl, u: sx0, v: sy1 },
+      { ...corners.br, u: sx1, v: sy1 }
+    ];
+    const out = [];
+    for (const point of points) {
+      const w = Math.max(1, point.z || 1);
+      const ndcX = ((point.x - PLAYFIELD.x) / PLAYFIELD.width) * 2 - 1;
+      const ndcY = 1 - ((point.y - PLAYFIELD.y) / PLAYFIELD.height) * 2;
+      const zNdc = clamp((w - 100) / (10000 - 100), 0, 1) * 2 - 1;
+      out.push(ndcX * w, ndcY * w, zNdc * w, w, point.u, point.v, ...color, w);
+    }
+    return out;
+  }
+  render(std, fog, image, projectQuad) {
+    if (!this.ready || !std || !image || !this.ensureTexture(image)) return false;
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    gl.enableVertexAttribArray(this.aClip);
+    gl.vertexAttribPointer(this.aClip, 4, gl.FLOAT, false, this.stride, 0);
+    gl.enableVertexAttribArray(this.aUv);
+    gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, this.stride, 4 * 4);
+    gl.enableVertexAttribArray(this.aColor);
+    gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, this.stride, 6 * 4);
+    gl.enableVertexAttribArray(this.aDepth);
+    gl.vertexAttribPointer(this.aDepth, 1, gl.FLOAT, false, this.stride, 10 * 4);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clearDepth(1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.BLEND);
+    const fogColor = colorParts(fog?.color ?? 0xff000000);
+    gl.uniform1i(this.uTexture, 0);
+    gl.uniform3f(this.uFogColor, fogColor.r / 255, fogColor.g / 255, fogColor.b / 255);
+    gl.uniform1f(this.uFogNear, fog?.near ?? 1000);
+    gl.uniform1f(this.uFogFar, fog?.far ?? 2000);
+    const frame = std.frame ?? 0;
+    const cam = std.camera(frame);
+    let drew = false;
+    for (let zLevel = 0; zLevel < 4; zLevel++) {
+      for (const inst of std.instances) {
+        const obj = std.objects[inst.id];
+        if (!obj || obj.zLevel !== zLevel) continue;
+        for (const q of obj.quads) {
+          const rect = std.anm.scriptSprite(q.script, 0, frame, { keepExitSprite: true });
+          if (!rect) continue;
+          const rawW = Math.max(0.001, q.w || rect.w * Math.abs(rect.scaleX || 1));
+          const rawH = Math.max(0.001, q.h || rect.h * Math.abs(rect.scaleY || 1));
+          const corners = projectQuad(
+            q.x + inst.x - cam.x,
+            q.y + inst.y - cam.y,
+            q.z + inst.z - cam.z,
+            rawW,
+            rawH,
+            rect.anchorTopLeft,
+            rect
+          );
+          if (!corners) continue;
+          const xs = [corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x];
+          const ys = [corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y];
+          const x0 = Math.min(...xs);
+          const x1 = Math.max(...xs);
+          const y0 = Math.min(...ys);
+          const y1 = Math.max(...ys);
+          if (x1 < PLAYFIELD.x - 32 || x0 > PLAYFIELD.right + 32 || y1 < PLAYFIELD.y - 32 || y0 > PLAYFIELD.bottom + 32) continue;
+          const vertices = this.quadVerticesFromScreen(rect, corners, image);
+          if (!vertices) continue;
+          gl.blendFunc(gl.SRC_ALPHA, rect.blendAdd ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STREAM_DRAW);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          drew = true;
+        }
+      }
+    }
+    gl.flush();
+    if (!this.healthy()) return false;
+    gl.disable(gl.BLEND);
+    return drew;
+  }
+}
+
 class Renderer {
   constructor(canvas, assets, game) {
     this.canvas = canvas;
@@ -2105,6 +2954,7 @@ class Renderer {
     this.game = game;
     this.tintCanvas = document.createElement('canvas');
     this.tintCtx = this.tintCanvas.getContext('2d');
+    this.stageWebgl = STAGE_WEBGL_ENABLED ? new StageWebGLRenderer() : null;
   }
   draw() {
     const g = this.game;
@@ -2205,24 +3055,16 @@ class Renderer {
     tctx.globalCompositeOperation = 'source-over';
     this.ctx.drawImage(this.tintCanvas, 0, 0, sw, sh, dx, dy, dw, dh);
   }
-  playerSprite(spec, x, y, scale = 1, alpha = 1, frameSeed = this.game.stageFrame, scaleY = scale) {
+  playerSprite(spec, x, y, scale = 1, alpha = 1, frameSeed = this.game.stageFrame, scaleY = scale, scriptId = ANM_SCRIPT_PLAYER_IDLE) {
     const anmIndex = spec.sheet === 'player01' ? 1 : 0;
-    const rect = this.game.stageRuntime.playerAnm[anmIndex].scriptSprite(0, 0, frameSeed % 32);
+    const scriptFrame = scriptId === ANM_SCRIPT_PLAYER_IDLE ? frameSeed % 32 : frameSeed;
+    const rect = this.game.stageRuntime.playerAnm[anmIndex].scriptSprite(scriptId, 0, scriptFrame);
     if (!rect) return;
-    this.sheetSprite(
-      spec.sheet,
-      rect.x,
-      rect.y,
-      rect.w,
-      rect.h,
-      x,
-      y,
-      rect.w * scale,
-      rect.h * scaleY,
-      rect.w / 2,
-      rect.h / 2,
-      alpha
-    );
+    this.drawAnmFrame(spec.sheet, rect, x, y, {
+      alpha,
+      scaleX: (rect.scaleX ?? 1) * scale,
+      scaleY: (rect.scaleY ?? 1) * scaleY
+    });
   }
   fillText(text, x, y, size = 16, color = '#fff', align = 'left') {
     const ctx = this.ctx;
@@ -2282,10 +3124,9 @@ class Renderer {
     this.image(g.phase === 'title' ? 'titleBg' : 'selectBg', 320, 240, 640, 480);
     this.rect(0, 0, 640, 480, '#050509', 0.28);
     if (g.phase === 'title') {
-      this.item('Start', 76, 220, true);
-      this.item('Replay', 76, 248, false);
-      this.item('Music Room', 76, 276, false);
-      this.item('Quit', 76, 304, false);
+      TITLE_MENU_ITEMS.forEach((option, i) => {
+        this.item(option.label, 76, 220 + i * 28, i === g.titleSelected && option.enabled, option.enabled);
+      });
     } else if (g.phase === 'difficulty') {
       this.fillText('Difficulty Select', 72, 186, 18);
       this.item('Lunatic', 84, 232, true);
@@ -2300,9 +3141,11 @@ class Renderer {
       });
     }
   }
-  item(label, x, y, active) {
-    this.fillText(active ? '>' : ' ', x, y, 18, active ? '#ffe6a8' : '#96a2c0');
-    this.fillText(label, x + 24, y, 18, active ? '#fff' : 'rgba(150,162,192,0.45)');
+  item(label, x, y, active, enabled = true) {
+    const idle = enabled ? '#96a2c0' : 'rgba(150,162,192,0.32)';
+    const text = enabled ? 'rgba(150,162,192,0.45)' : 'rgba(150,162,192,0.24)';
+    this.fillText(active ? '>' : ' ', x, y, 18, active ? '#ffe6a8' : idle);
+    this.fillText(label, x + 24, y, 18, active ? '#fff' : text);
   }
   stage() {
     const g = this.game;
@@ -2418,6 +3261,32 @@ class Renderer {
     if (!tl || !tr || !bl || !br) return null;
     return { tl, tr, bl, br };
   }
+  stageQuadCornersTransformed(x, y, z, w, h, anchorTopLeft, camera, rect, y0 = 0, y1 = h) {
+    const rx = rect?.rotationX || 0;
+    const ry = rect?.rotationY || 0;
+    const rz = rect?.rotationZ ?? rect?.rotation ?? 0;
+    if (!rx && !ry && !rz) return this.stageQuadCorners(x, y, z, w, h, anchorTopLeft, camera, y0, y1);
+    if (y0 !== 0 || y1 !== h) return null;
+    const center = anchorTopLeft
+      ? { x: x + w / 2, y: -y - h / 2, z }
+      : { x, y: -y, z };
+    const local = {
+      tl: { x: -w / 2, y: h / 2, z: 0 },
+      tr: { x: w / 2, y: h / 2, z: 0 },
+      bl: { x: -w / 2, y: -h / 2, z: 0 },
+      br: { x: w / 2, y: -h / 2, z: 0 }
+    };
+    const project = (point) => {
+      const rotated = rotate3(point, rx, ry, rz);
+      return this.stageProjectPoint(center.x + rotated.x, center.y + rotated.y, center.z + rotated.z, camera);
+    };
+    const tl = project(local.tl);
+    const tr = project(local.tr);
+    const bl = project(local.bl);
+    const br = project(local.br);
+    if (!tl || !tr || !bl || !br) return null;
+    return { tl, tr, bl, br };
+  }
   stageQuadBounds(corners) {
     const xs = [corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x];
     const ys = [corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y];
@@ -2484,11 +3353,13 @@ class Renderer {
     if (fog && fog.far > fog.near) {
       const depth = (top.tl.z + top.tr.z + bottom.bl.z + bottom.br.z) / 4;
       const alpha = clamp((depth - fog.near) / (fog.far - fog.near), 0, 1);
-      this.stageFillTriangle(top.tl, top.tr, bottom.bl, fog.css, alpha);
-      this.stageFillTriangle(top.tr, bottom.br, bottom.bl, fog.css, alpha);
+      const fogBrightness = ((fog.r ?? 0) + (fog.g ?? 0) + (fog.b ?? 0)) / 765;
+      const fogAlpha = Math.min(alpha, fogBrightness > 0.78 ? 0.68 : 1);
+      this.stageFillTriangle(top.tl, top.tr, bottom.bl, fog.css, fogAlpha);
+      this.stageFillTriangle(top.tr, bottom.br, bottom.bl, fog.css, fogAlpha);
     }
   }
-  stageDrawProjectedQuad(img, rect, x, y, z, w, h, anchorTopLeft, camera, color, fog) {
+  stageDrawProjectedQuad(img, rect, x, y, z, w, h, anchorTopLeft, camera, color, fog, transformedCorners = null) {
     const tint = (color & 0x00ffffff) !== 0x00ffffff;
     let drawImg = img;
     if (tint) {
@@ -2506,6 +3377,18 @@ class Renderer {
       tctx.drawImage(img, 0, 0);
       tctx.globalCompositeOperation = 'source-over';
       drawImg = this.tintCanvas;
+    }
+    if (transformedCorners) {
+      this.stageDrawProjectedStrip(
+        drawImg,
+        rect,
+        { tl: transformedCorners.tl, tr: transformedCorners.tr },
+        { bl: transformedCorners.bl, br: transformedCorners.br },
+        0,
+        rect.h,
+        fog
+      );
+      return;
     }
     const steps = Math.max(2, Math.min(64, Math.ceil(h / 16)));
     for (let i = 0; i < steps; i++) {
@@ -2526,6 +3409,12 @@ class Renderer {
     const stageBgKey = this.game.stageAssets?.stageBg || 'stg1bg';
     const img = this.assets[stageBgKey];
     if (!img) return;
+    const projectQuad = (x, y, z, w, h, anchorTopLeft, rect) =>
+      this.stageQuadCornersTransformed(x, y, z, w, h, anchorTopLeft, camera, rect);
+    if (STAGE_WEBGL_ENABLED && this.stageWebgl?.render(std, fog, img, projectQuad)) {
+      ctx.drawImage(this.stageWebgl.canvas, PLAYFIELD.x, PLAYFIELD.y);
+      return;
+    }
     ctx.save();
     ctx.beginPath();
     ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
@@ -2542,7 +3431,7 @@ class Renderer {
           const vmZ = q.z + inst.z - cam.z;
           const rawW = Math.max(0.001, q.w || rect.w * Math.abs(rect.scaleX || 1));
           const rawH = Math.max(0.001, q.h || rect.h * Math.abs(rect.scaleY || 1));
-          const corners = this.stageQuadCorners(vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera);
+          const corners = this.stageQuadCornersTransformed(vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, rect);
           if (!corners) continue;
           const bounds = this.stageQuadBounds(corners);
           if (bounds.x + bounds.w < PLAYFIELD.x - 32 || bounds.x > PLAYFIELD.right + 32 || bounds.y + bounds.h < PLAYFIELD.y - 32 || bounds.y > PLAYFIELD.bottom + 32) continue;
@@ -2550,7 +3439,8 @@ class Renderer {
           ctx.globalAlpha = (rect.alpha ?? 255) / 255;
           ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
           const color = (rect.color ?? 0xffffffff) >>> 0;
-          this.stageDrawProjectedQuad(img, rect, vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, color, fog);
+          const hasRotation = !!(rect.rotationX || rect.rotationY || rect.rotationZ || rect.rotation);
+          this.stageDrawProjectedQuad(img, rect, vmX, vmY, vmZ, rawW, rawH, rect.anchorTopLeft, camera, color, fog, hasRotation ? corners : null);
           ctx.restore();
         }
       }
@@ -2586,7 +3476,16 @@ class Renderer {
         scaleX = Math.max(0.001, t);
         scaleY = 1 + 2 * (1 - t);
       }
-      this.playerSprite(spec, PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y, scaleX, alpha, g.stageFrame, scaleY);
+      this.playerSprite(
+        spec,
+        PLAYFIELD.x + g.player.x,
+        PLAYFIELD.y + g.player.y,
+        scaleX,
+        alpha,
+        g.player.animDrawFrame ?? g.stageFrame,
+        scaleY,
+        g.player.animScript ?? ANM_SCRIPT_PLAYER_IDLE
+      );
       if (g.player.state === 'deathbomb') this.deathbombMarker(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
       if (g.player.focus && (g.player.state === 'alive' || g.player.state === 'invuln')) this.hitPoint(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
     }
@@ -2882,6 +3781,7 @@ class Renderer {
     this.fillText(String(g.graze), 496, 204, 17, '#ffffff');
     this.frontSprite('pointLabel', 432, 226);
     this.fillText(String(g.pointItemsCollectedInStage || 0), 496, 224, 17, '#ffffff');
+    if (g.autoplayMode) this.fillText('AUTOPLAY', 432, 258, 14, '#ffe6a8');
     this.bossHud();
   }
   frontFrame() {
@@ -3314,8 +4214,11 @@ async function main() {
       bombs: game.bombs,
       score: game.score,
       graze: game.graze,
+      autoplay: !!game.autoplayMode,
+      playerBullets: game.playerBullets.length,
       fullPowerMode: game.fullPowerMode || 0,
       stageEntryFade: game.stageEntryFade || 0,
+      timeStopped: !!game.timeStopped,
       boss: {
         present: game.bossUi.present,
         name: game.bossUi.bossName,
@@ -3382,8 +4285,10 @@ async function main() {
       effects: game.effects.map((effect) => ({ type: effect.type, x: round(effect.x), y: round(effect.y), effectId: effect.effectId, life: effect.life })),
       runtime: {
         timelineIndex: game.stageRuntime.timelineIndex,
+        timelineFrame: game.stageRuntime.timelineFrame,
         timelineLength: game.stageRuntime.ecl.timeline.length,
         timelineComplete: game.stageRuntime.isTimelineComplete(),
+        stdFrame: game.stageRuntime.std.frame,
         stageBg: game.stageAssets.stageBg,
         effect: game.stageAssets.effect
       }
@@ -3392,6 +4297,8 @@ async function main() {
       game.loadStage(stage);
       game.resetStageState();
       game.phase = 'playing';
+      game.autoplayMode = !!options.autoplay;
+      if (game.autoplayMode) game.autoplay?.reset();
       game.power = options.power ?? 128;
       game.lives = options.lives ?? game.lives;
       game.bombs = options.bombs ?? game.bombs;
@@ -3423,8 +4330,16 @@ async function main() {
       return snapshot();
     };
     const setStageFrame = (frame) => {
-      game.stageFrame = Math.max(0, Math.trunc(frame || 0));
+      const targetFrame = Math.max(0, Math.trunc(frame || 0));
+      game.stageFrame = targetFrame;
+      game.stageRuntime.timelineFrame = targetFrame;
+      game.stageRuntime.std.frame = targetFrame;
       renderer.draw();
+      return snapshot();
+    };
+    const setAutoplay = (enabled = true) => {
+      game.autoplayMode = !!enabled;
+      game.autoplay?.reset();
       return snapshot();
     };
     const spawnItem = (type, x = game.player.x, y = game.player.y, options = {}) => {
@@ -3488,6 +4403,7 @@ async function main() {
       setStage,
       advance,
       setStageFrame,
+      setAutoplay,
       spawnItem,
       spawnEnemyBullet,
       killBosses,
@@ -3512,10 +4428,12 @@ async function main() {
   const tick = (now) => {
     acc += Math.min(250, now - last);
     last = now;
-    while (acc >= STEP_MS) {
+    if (input.consumeActivity()) acc = Math.max(acc, STEP_MS);
+    while (acc + STEP_EPSILON_MS >= STEP_MS) {
       game.update(input.frame());
       audio.sync(game.track);
       acc -= STEP_MS;
+      if (Math.abs(acc) < STEP_EPSILON_MS) acc = 0;
     }
     fpsFrames++;
     if (now - fpsStamp >= 500) {
