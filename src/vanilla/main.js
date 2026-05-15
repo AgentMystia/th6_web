@@ -1966,7 +1966,8 @@ class Game {
   updateDialogue(input) {
     const d = this.dialogue;
     if (!d?.active) return;
-    const skip = input.pressed.has('confirm') || input.pressed.has('shoot');
+    const mobileTapSkip = !!input.mobileMode && (input.mobileMenuTaps?.length || 0) > 0;
+    const skip = input.pressed.has('confirm') || input.pressed.has('shoot') || mobileTapSkip;
     if (d.waiting) {
       d.waitFrame++;
       if ((skip && d.waitFrame >= 8) || d.waitFrame >= d.waitLimit) d.waiting = false;
@@ -5366,6 +5367,14 @@ async function main() {
         hitboxVisible: !!game.mobileInputMode && (game.player.state === 'alive' || game.player.state === 'invuln'),
         layout: mobileController.snapshot()
       },
+      dialogue: game.dialogue?.active ? {
+        ptr: game.dialogue.ptr,
+        timer: game.dialogue.timer,
+        waiting: !!game.dialogue.waiting,
+        waitFrame: game.dialogue.waitFrame,
+        waitLimit: game.dialogue.waitLimit,
+        lines: [...game.dialogue.lines]
+      } : null,
       playerBullets: game.playerBullets.length,
       fullPowerMode: game.fullPowerMode || 0,
       stageEntryFade: game.stageEntryFade || 0,
@@ -5604,6 +5613,16 @@ async function main() {
       renderer.draw();
       return snapshot();
     };
+    const startTestDialogue = (waitLimit = 999999) => {
+      game.phase = 'playing';
+      game.startDialogue(0, [
+        { time: 0, op: 3, line: 0, text: 'test dialogue', color: 0 },
+        { time: 0, op: 4, arg: Math.max(1, waitLimit | 0) },
+        { time: 0, op: 0 }
+      ]);
+      renderer.draw();
+      return snapshot();
+    };
     const consumeInputFrame = () => {
       const runtimeInput = input.frame();
       game.update(runtimeInput);
@@ -5812,6 +5831,7 @@ async function main() {
       setAutoplay,
       setMobileMode,
       setMobileShotFocus,
+      startTestDialogue,
       consumeInputFrame,
       spawnItem,
       spawnEnemyBullet,
