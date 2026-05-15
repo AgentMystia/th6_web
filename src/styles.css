@@ -30,3 +30,99 @@ canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
+
+.game-shell {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.mobile-controls,
+.mobile-orientation-hint {
+  display: none;
+}
+
+html.mobile-touch,
+html.mobile-touch body,
+html.mobile-touch #app {
+  overscroll-behavior: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html.mobile-touch body {
+  position: fixed;
+  inset: 0;
+}
+
+html.mobile-touch .game-shell {
+  --mobile-rail: clamp(88px, 14vw, 132px);
+  --mobile-gap: 8px;
+  display: grid;
+  grid-template-columns: var(--mobile-rail) minmax(0, 1fr);
+  grid-template-rows: 100%;
+  align-items: center;
+  justify-items: center;
+  gap: var(--mobile-gap);
+  padding:
+    max(env(safe-area-inset-top), 8px)
+    max(env(safe-area-inset-right), 8px)
+    max(env(safe-area-inset-bottom), 8px)
+    max(env(safe-area-inset-left), 8px);
+  background: #000;
+}
+
+html.mobile-touch canvas {
+  grid-column: 2;
+  width: min(100%, calc((100svh - 16px) * 4 / 3));
+  height: auto;
+  max-height: calc(100svh - 16px);
+  aspect-ratio: 4 / 3;
+}
+
+html.mobile-touch .mobile-controls {
+  grid-column: 1;
+  display: grid;
+  width: 100%;
+  max-width: 120px;
+  align-content: center;
+  gap: 14px;
+  pointer-events: auto;
+}
+
+.mobile-control {
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(18, 14, 30, 0.76);
+  font: 700 14px "MS Gothic", "Yu Gothic", monospace;
+  letter-spacing: 0;
+  text-align: center;
+  touch-action: none;
+}
+
+.mobile-control:active,
+.mobile-control.is-active {
+  border-color: #ffe6a8;
+  color: #ffe6a8;
+  background: rgba(78, 34, 58, 0.88);
+}
+
+@media (orientation: portrait) {
+  html.mobile-touch .mobile-orientation-hint {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.86);
+    font: 700 18px "MS Gothic", "Yu Gothic", monospace;
+    text-align: center;
+  }
+}

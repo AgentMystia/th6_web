@@ -1010,9 +1010,12 @@
         if (time < 0 || op < 0) return;
         if (ctx.time !== time) break;
         if (skip & (1 << ACTIVE_ECL_DIFFICULTY)) {
+          const previousExecutingEnemy = this.executingEnemy || null;
+          this.executingEnemy = e;
           const action = this.execute(game, e, ctx, op);
+          this.executingEnemy = previousExecutingEnemy;
           if (action === 'delete') {
-            e.hp = 0;
+            e.dead = true;
             return;
           }
           if (action === 'jump' || action === 'call' || action === 'ret') continue;
@@ -1317,17 +1320,40 @@
       this.resetBulletRankInfluence(s);
       s.stack.length = 0;
     }
+    enemyUsesNormalDeath(enemy) {
+      const s = enemy.ecl;
+      return !!s && s.interactable && !s.invisible;
+    }
+    clearNonBossEnemy(enemy) {
+      enemy.hp = 0;
+      if (!enemy.ecl) {
+        enemy.dead = true;
+        return;
+      }
+      const s = enemy.ecl;
+      if (!this.enemyUsesNormalDeath(enemy)) {
+        if (s.deathCallbackSub >= 0) {
+          const sub = s.deathCallbackSub;
+          s.deathCallbackSub = -1;
+          this.callCallbackSub(s, sub);
+        } else {
+          enemy.dead = true;
+        }
+      }
+    }
     clearNonBossEnemiesForCallback(game, owner) {
       for (const enemy of game.enemies) {
         if (enemy === owner || enemy.ecl?.isBoss) continue;
-        enemy.hp = 0;
+        this.clearNonBossEnemy(enemy);
       }
     }
     killNonBossEnemies(game) {
+      const owner = this.executingEnemy || null;
       for (const enemy of game.enemies) {
+        if (enemy === owner) continue;
         if (enemy.ecl?.isBoss || enemy.kind === 'boss') continue;
         enemy.hp = 0;
-        if (!enemy.ecl) enemy.dead = true;
+        this.clearNonBossEnemy(enemy);
       }
     }
     checkCallbacks(game, e) {
@@ -1661,7 +1687,23 @@
         const distance = seed * 10 + 32;
         const angle = normalizeAngle(e.ecl.exFunc6Angle - seed * Math.PI / 40);
         for (const side of [-1, 1]) {
-          game.spawnEffectParticles?.(19, e.x + Math.cos(angle) * distance * side, e.y + Math.sin(angle) * distance, 1, 0xff2020ff);
+          const vx = (game.rng.f() * 40 - 20) / 60;
+          const vy = (8 * seed) / 60 - 4 / 15;
+          game.spawnEffectParticles?.(
+            19,
+            e.x + Math.cos(angle) * distance * side,
+            e.y + Math.sin(angle) * distance,
+            1,
+            0xff2020ff,
+            {
+              randomIndex: 0,
+              angle: 0,
+              vx,
+              vy,
+              ax: -vx / 120,
+              ay: -vy / 120
+            }
+          );
         }
       }
     }
@@ -1940,6 +1982,15 @@
     }
     killEnemy(game, e) {
       const s = e.ecl;
+      if (!this.enemyUsesNormalDeath(e)) {
+        if (s.deathCallbackSub >= 0) {
+          const sub = s.deathCallbackSub;
+          s.deathCallbackSub = -1;
+          this.callCallbackSub(s, sub);
+          return true;
+        }
+        return false;
+      }
       if (s.deathCallbackSub >= 0) {
         game.spawnEnemyDeathEffect?.(e, s);
         e.hp = 1;

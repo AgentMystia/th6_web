@@ -28,7 +28,35 @@ const ITEM_GET_BORDER_Y = 128;
 // ItemManager removes drops at arcadeRegionSize.y + GAME_REGION_TOP.
 const ITEM_DESPAWN_Y = PLAYFIELD.height + PLAYFIELD.y;
 const HTML_AUDIO_HAVE_CURRENT_DATA = 2;
-const STAGE_WEBGL_ENABLED = typeof location !== 'undefined' && new URLSearchParams(location.search).has('stage-webgl');
+function rendererPreference() {
+  if (typeof location === 'undefined') return 'canvas';
+  const params = new URLSearchParams(location.search);
+  if (params.has('stage-canvas')) return 'canvas';
+  const requested = params.get('renderer');
+  return requested === 'canvas' || requested === 'webgl' || requested === 'auto' ? requested : 'auto';
+}
+const RENDERER_PREFERENCE = rendererPreference();
+const RENDERER_CAN_TRY_WEBGL = typeof document !== 'undefined'
+  && RENDERER_PREFERENCE !== 'canvas'
+  && (RENDERER_PREFERENCE === 'webgl' || (typeof location !== 'undefined' && (location.protocol === 'http:' || location.protocol === 'https:')));
+const STAGE_WEBGL_ENABLED = RENDERER_CAN_TRY_WEBGL;
+const SPRITE_WEBGL_ENABLED = RENDERER_CAN_TRY_WEBGL;
+function webglErrorName(gl, code) {
+  if (!code || code === gl.NO_ERROR) return '';
+  if (code === gl.INVALID_ENUM) return 'INVALID_ENUM';
+  if (code === gl.INVALID_VALUE) return 'INVALID_VALUE';
+  if (code === gl.INVALID_OPERATION) return 'INVALID_OPERATION';
+  if (code === gl.OUT_OF_MEMORY) return 'OUT_OF_MEMORY';
+  if (code === 0x9242) return 'CONTEXT_LOST_WEBGL';
+  return `GL_ERROR_${code}`;
+}
+function clearWebglErrors(gl) {
+  if (!gl) return;
+  for (let i = 0; i < 16; i++) {
+    const err = gl.getError();
+    if (!err || err === gl.NO_ERROR) break;
+  }
+}
 const STAGE_TRANSITION_FRAMES = 240;
 const STAGE_TRANSITION_FLY_FRAMES = 120;
 const STAGE_ENTRY_FADE_FRAMES = 45;
@@ -156,6 +184,7 @@ const TITLE_MENU_ITEMS = [
   { id: 'music', label: 'Music Room', enabled: false },
   { id: 'quit', label: 'Quit', enabled: false }
 ];
+const MOBILE_SW_PATH = 'sw.js';
 
 const keyMap = new Map([
   ['ArrowUp', ['up']],
@@ -202,6 +231,44 @@ const SFX_FILES = [
 const SFX_MAP = TH06_LOGIC.SFX_BUFFER_IDX_VOLUME
   .map(([file, db]) => ({ file, volume: clamp(Math.pow(10, db / 2000), 0.06, 0.82) }));
 
+function isMobileTouchMode() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(location.search);
+  if (params.get('mobile') === '1') return true;
+  if (params.get('mobile') === '0') return false;
+  const touchCapable = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  const hoverNone = typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
+  const mobileViewport = Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 820;
+  return !!(touchCapable && coarse && hoverNone && mobileViewport);
+}
+
+function canUseServiceWorker() {
+  return typeof navigator !== 'undefined'
+    && 'serviceWorker' in navigator
+    && (location.protocol === 'http:' || location.protocol === 'https:');
+}
+
+function unregisterMobileServiceWorker() {
+  if (!canUseServiceWorker() || typeof navigator.serviceWorker.getRegistrations !== 'function') return;
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    for (const registration of registrations) {
+      const worker = registration.active || registration.waiting || registration.installing;
+      const script = worker?.scriptURL || '';
+      if (script.endsWith(`/${MOBILE_SW_PATH}`)) registration.unregister().catch(() => {});
+    }
+  }).catch(() => {});
+}
+
+function configureMobilePwa(enabled, testMode = false) {
+  if (!canUseServiceWorker()) return;
+  if (enabled && !testMode) {
+    navigator.serviceWorker.register(MOBILE_SW_PATH).catch(() => {});
+  } else {
+    unregisterMobileServiceWorker();
+  }
+}
+
 class Rng {
   constructor(seed = 0x1527) {
     this.seed = seed & 0xffff;
@@ -234,14 +301,23 @@ class Input {
     this.codes = new Set();
     this.downEdges = new Set();
     this.activity = false;
+    this.activityStamp = 0;
+    this.lastConsumedActivityStamp = 0;
+    this.mobileController = null;
     addEventListener('keydown', (event) => this.down(event), { passive: false });
     addEventListener('keyup', (event) => this.up(event), { passive: false });
     addEventListener('blur', () => {
       this.held.clear();
       this.codes.clear();
       this.downEdges.clear();
-      this.activity = true;
+      this.markActivity();
     });
+  }
+  markActivity(event = null) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const stamp = event?.timeStamp;
+    this.activityStamp = Number.isFinite(stamp) && Math.abs(now - stamp) < 60000 ? stamp : now;
+    this.activity = true;
   }
   down(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
@@ -252,10 +328,10 @@ class Input {
     for (const button of buttons) {
       const edgesBefore = this.downEdges.size;
       if (!event.repeat && !this.held.has(button)) this.downEdges.add(button);
-      if (this.downEdges.size !== edgesBefore) this.activity = true;
+      if (this.downEdges.size !== edgesBefore) this.markActivity(event);
       this.held.add(button);
     }
-    if (!event.repeat && !wasKnownCode) this.activity = true;
+    if (!event.repeat && !wasKnownCode) this.markActivity(event);
   }
   up(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
@@ -267,17 +343,200 @@ class Input {
     for (const code of this.codes) {
       for (const button of keyMap.get(code) || []) this.held.add(button);
     }
-    if (hadKnownCode) this.activity = true;
+    if (hadKnownCode) this.markActivity(event);
+  }
+  setMobileController(controller) {
+    this.mobileController = controller;
   }
   frame() {
     const pressed = new Set(this.downEdges);
     this.downEdges.clear();
-    return { held: new Set(this.held), pressed };
+    const held = new Set(this.held);
+    let mobileFrame = null;
+    if (this.mobileController?.enabled) {
+      mobileFrame = this.mobileController.frame();
+      if (mobileFrame.bombPressed) pressed.add('bomb');
+      if (mobileFrame.shootHeld) held.add('shoot');
+    }
+    return {
+      held,
+      pressed,
+      mobileMode: !!mobileFrame,
+      analogMove: mobileFrame?.analogMove || null,
+      mobileShootHeld: !!mobileFrame?.shootHeld,
+      mobileShotFocus: !!mobileFrame?.shotFocus
+    };
   }
   consumeActivity() {
-    const active = this.activity || this.downEdges.size > 0;
+    const mobileActive = !!this.mobileController?.hasActivity();
+    const active = this.activity || this.downEdges.size > 0 || mobileActive;
+    if (active) {
+      const mobileStamp = this.mobileController?.lastActivityStamp || 0;
+      this.lastConsumedActivityStamp = Math.max(this.activityStamp || 0, mobileStamp);
+    } else {
+      this.lastConsumedActivityStamp = 0;
+    }
     this.activity = false;
     return active;
+  }
+}
+
+class MobileTouchController {
+  constructor(shell, canvas) {
+    this.shell = shell;
+    this.canvas = canvas;
+    this.enabled = false;
+    this.shotFocus = false;
+    this.movePointerId = null;
+    this.lastPoint = null;
+    this.dx = 0;
+    this.dy = 0;
+    this.bombEdges = 0;
+    this.activity = false;
+    this.lastActivityStamp = 0;
+    this.controls = null;
+    this.orientationHint = null;
+    this.boundPointerDown = (event) => this.onPointerDown(event);
+    this.boundPointerMove = (event) => this.onPointerMove(event);
+    this.boundPointerUp = (event) => this.onPointerUp(event);
+  }
+  markActivity(event = null) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const stamp = event?.timeStamp;
+    this.lastActivityStamp = Number.isFinite(stamp) && Math.abs(now - stamp) < 60000 ? stamp : now;
+    this.activity = true;
+  }
+  setEnabled(enabled) {
+    if (this.enabled === !!enabled) return;
+    this.enabled = !!enabled;
+    this.resetPointers();
+    if (this.enabled) this.mount();
+    else this.unmount();
+  }
+  mount() {
+    if (!this.controls) {
+      this.controls = document.createElement('div');
+      this.controls.className = 'mobile-controls';
+      const bomb = document.createElement('button');
+      bomb.className = 'mobile-control mobile-bomb';
+      bomb.type = 'button';
+      bomb.textContent = 'BOMB';
+      bomb.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        this.bombEdges++;
+        this.markActivity(event);
+      });
+      const speed = document.createElement('button');
+      speed.className = 'mobile-control mobile-shot-mode';
+      speed.type = 'button';
+      speed.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        this.setShotFocus(!this.shotFocus);
+      });
+      this.controls.append(bomb, speed);
+      this.speedButton = speed;
+    }
+    if (!this.orientationHint) {
+      this.orientationHint = document.createElement('div');
+      this.orientationHint.className = 'mobile-orientation-hint';
+      this.orientationHint.textContent = '请横屏游玩';
+    }
+    this.shell.prepend(this.controls);
+    this.shell.appendChild(this.orientationHint);
+    this.shell.addEventListener('pointerdown', this.boundPointerDown, { passive: false });
+    this.shell.addEventListener('pointermove', this.boundPointerMove, { passive: false });
+    this.shell.addEventListener('pointerup', this.boundPointerUp, { passive: false });
+    this.shell.addEventListener('pointercancel', this.boundPointerUp, { passive: false });
+    this.updateControls();
+  }
+  unmount() {
+    this.shell.removeEventListener('pointerdown', this.boundPointerDown);
+    this.shell.removeEventListener('pointermove', this.boundPointerMove);
+    this.shell.removeEventListener('pointerup', this.boundPointerUp);
+    this.shell.removeEventListener('pointercancel', this.boundPointerUp);
+    this.controls?.remove();
+    this.orientationHint?.remove();
+  }
+  resetPointers() {
+    this.movePointerId = null;
+    this.lastPoint = null;
+    this.dx = 0;
+    this.dy = 0;
+    this.bombEdges = 0;
+  }
+  setShotFocus(enabled) {
+    this.shotFocus = !!enabled;
+    this.markActivity();
+    this.updateControls();
+  }
+  updateControls() {
+    if (!this.speedButton) return;
+    this.speedButton.textContent = this.shotFocus ? 'LOW' : 'HIGH';
+    this.speedButton.classList.toggle('is-active', this.shotFocus);
+    this.speedButton.setAttribute('aria-pressed', String(this.shotFocus));
+  }
+  isControlTarget(target) {
+    return !!target?.closest?.('.mobile-controls');
+  }
+  onPointerDown(event) {
+    if (!this.enabled || this.isControlTarget(event.target) || this.movePointerId != null) return;
+    event.preventDefault();
+    this.movePointerId = event.pointerId;
+    this.lastPoint = { x: event.clientX, y: event.clientY };
+    this.shell.setPointerCapture?.(event.pointerId);
+    this.markActivity(event);
+  }
+  onPointerMove(event) {
+    if (!this.enabled || event.pointerId !== this.movePointerId || !this.lastPoint) return;
+    event.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? GAME_WIDTH / rect.width : 1;
+    const scaleY = rect.height > 0 ? GAME_HEIGHT / rect.height : 1;
+    const coalesced = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : null;
+    const samples = coalesced?.length ? coalesced : [event];
+    let last = this.lastPoint;
+    for (const sample of samples) {
+      this.dx += (sample.clientX - last.x) * scaleX;
+      this.dy += (sample.clientY - last.y) * scaleY;
+      last = { x: sample.clientX, y: sample.clientY };
+    }
+    this.lastPoint = last;
+    this.markActivity(event);
+  }
+  onPointerUp(event) {
+    if (event.pointerId !== this.movePointerId) return;
+    event.preventDefault();
+    this.movePointerId = null;
+    this.lastPoint = null;
+    this.markActivity(event);
+  }
+  frame() {
+    const analogMove = { x: this.dx, y: this.dy };
+    const bombPressed = this.bombEdges > 0;
+    this.dx = 0;
+    this.dy = 0;
+    this.bombEdges = 0;
+    return {
+      analogMove,
+      bombPressed,
+      shootHeld: true,
+      shotFocus: this.shotFocus
+    };
+  }
+  hasActivity() {
+    const active = this.activity;
+    this.activity = false;
+    return active;
+  }
+  snapshot() {
+    const controls = this.controls?.getBoundingClientRect();
+    const canvas = this.canvas.getBoundingClientRect();
+    return {
+      enabled: this.enabled,
+      shotFocus: this.shotFocus,
+      controls: controls ? { x: controls.x, y: controls.y, w: controls.width, h: controls.height } : null,
+      canvas: { x: canvas.x, y: canvas.y, w: canvas.width, h: canvas.height }
+    };
   }
 }
 
@@ -1045,6 +1304,7 @@ class Game {
     this.pendingAutoplay = false;
     this.autoplayMode = false;
     this.autoplay = new AutoplayController();
+    this.mobileInputMode = false;
     this.track = null;
     this.audio = null;
     this.stages = window.TH06_EMBEDDED_DATA?.games?.th06?.stages;
@@ -1102,6 +1362,7 @@ class Game {
       deathbombFrame: 0,
       deathDropsDone: false,
       focus: false,
+      focusCollect: false,
       focusT: 0,
       shotFrame: -1,
       laserTimers: [0, 0],
@@ -1226,7 +1487,7 @@ class Game {
     this.increaseSubrank(-amount);
   }
   itemGetBorderActive() {
-    return this.player.y < ITEM_GET_BORDER_Y && (this.power >= 128 || this.player.focus);
+    return this.player.y < ITEM_GET_BORDER_Y && (this.power >= 128 || this.player.focusCollect);
   }
   stageIntroTotalFrames() {
     return this.stageMeta.presentation.introFrames;
@@ -1585,7 +1846,12 @@ class Game {
   endBossSpell(options = {}) {
     const boss = this.enemies.find((e) => e.kind === 'boss' || e.ecl?.isBoss);
     if (boss) this.spellBreakEffect(boss, { playSound: !options.fromBossDeath });
-    this.effects = this.effects.filter((effect) => !effect.spellEffect);
+    let write = 0;
+    for (let i = 0; i < this.effects.length; i++) {
+      const effect = this.effects[i];
+      if (!effect.spellEffect) this.effects[write++] = effect;
+    }
+    this.effects.length = write;
     if (this.spellcardInfo.isActive && this.spellcardInfo.isCapturing) {
       const bonus = TH06_LOGIC.spellcardBonus(this.spellcardInfo.idx || 0, this.bossUi.timerSeconds);
       this.addScore(bonus);
@@ -1702,21 +1968,36 @@ class Game {
       this.player.invuln--;
       if (this.player.invuln <= 0) this.player.state = 'alive';
     }
-    this.player.focus = input.held.has('focus');
+    const mobileMode = !!input.mobileMode;
+    const shotFocus = mobileMode ? !!input.mobileShotFocus : input.held.has('focus');
+    this.player.focus = shotFocus;
+    this.player.focusCollect = !mobileMode && input.held.has('focus');
     this.player.focusT = clamp(this.player.focusT + (this.player.focus ? 1 : -1), 0, 8);
-    const dx = Number(input.held.has('right')) - Number(input.held.has('left'));
-    const dy = Number(input.held.has('down')) - Number(input.held.has('up'));
-    let speed = this.player.focus ? spec.focus : spec.speed;
-    if (this.activeBombs.some((bomb) => bomb.type === 'marisaB')) speed *= 0.3;
-    speed /= dx && dy ? Math.sqrt(2) : 1;
-    const horizontalSpeed = dx * speed;
-    const verticalSpeed = dy * speed;
+    let horizontalSpeed = 0;
+    let verticalSpeed = 0;
+    if (mobileMode) {
+      const analog = input.analogMove || { x: 0, y: 0 };
+      let speed = spec.speed;
+      if (this.activeBombs.some((bomb) => bomb.type === 'marisaB')) speed *= 0.3;
+      const length = Math.hypot(analog.x || 0, analog.y || 0);
+      const scale = length > speed && length > 0 ? speed / length : 1;
+      horizontalSpeed = (analog.x || 0) * scale;
+      verticalSpeed = (analog.y || 0) * scale;
+    } else {
+      const dx = Number(input.held.has('right')) - Number(input.held.has('left'));
+      const dy = Number(input.held.has('down')) - Number(input.held.has('up'));
+      let speed = this.player.focus ? spec.focus : spec.speed;
+      if (this.activeBombs.some((bomb) => bomb.type === 'marisaB')) speed *= 0.3;
+      speed /= dx && dy ? Math.sqrt(2) : 1;
+      horizontalSpeed = dx * speed;
+      verticalSpeed = dy * speed;
+    }
     this.updatePlayerMovementAnimation(horizontalSpeed, verticalSpeed);
-    this.player.x = clamp(this.player.x + dx * speed, MOVE_AREA.x, MOVE_AREA.right);
-    this.player.y = clamp(this.player.y + dy * speed, MOVE_AREA.y, MOVE_AREA.bottom);
+    this.player.x = clamp(this.player.x + horizontalSpeed, MOVE_AREA.x, MOVE_AREA.right);
+    this.player.y = clamp(this.player.y + verticalSpeed, MOVE_AREA.y, MOVE_AREA.bottom);
     const actionLocked = !!this.dialogue?.active;
     if (!actionLocked && input.pressed.has('bomb') && this.bombs > 0 && this.activeBombs.length === 0) this.bomb();
-    const shootHeld = input.held.has('shoot');
+    const shootHeld = input.held.has('shoot') || (mobileMode && input.mobileShootHeld);
     if (!shootHeld) this.player.shotFrame = -1;
     else if (actionLocked) this.player.shotFrame = -1;
     else if (this.player.shotFrame < 0) this.player.shotFrame = 0;
@@ -1784,6 +2065,7 @@ class Game {
     }
     this.player.spawnFrame++;
     this.player.focus = false;
+    this.player.focusCollect = false;
     this.player.focusT = clamp(this.player.focusT - 1, 0, 8);
     this.player.shotFrame = -1;
     this.player.prevHorizontalSpeed = 0;
@@ -1885,7 +2167,12 @@ class Game {
       else if (bomb.type === 'marisaB') bomb.keep = TH06_LOGIC.updateMarisaBBomb(bomb, ctx);
       else bomb.keep = false;
     }
-    this.activeBombs = this.activeBombs.filter((bomb) => bomb.keep !== false);
+    let write = 0;
+    for (let i = 0; i < this.activeBombs.length; i++) {
+      const bomb = this.activeBombs[i];
+      if (bomb.keep !== false) this.activeBombs[write++] = bomb;
+    }
+    this.activeBombs.length = write;
   }
   bombContext() {
     return {
@@ -1929,7 +2216,14 @@ class Game {
   enemyCanBeTargeted(e) {
     if (!e || e.dead || e.hp <= 0) return false;
     if (e.ecl) {
-      if (!e.ecl.seen || !e.ecl.canTakeDamage || !e.ecl.interactable) return false;
+      if (!e.ecl.seen || e.ecl.invisible || !e.ecl.canTakeDamage || !e.ecl.interactable) return false;
+    }
+    return this.enemyInArcadeBounds(e);
+  }
+  enemyCanInteractWithPlayerShot(e) {
+    if (!e || e.dead || e.hp <= 0) return false;
+    if (e.ecl) {
+      if (!e.ecl.seen || e.ecl.invisible || !e.ecl.interactable) return false;
     }
     return this.enemyInArcadeBounds(e);
   }
@@ -1939,7 +2233,7 @@ class Game {
   }
   damageEnemy(e, damage, source = 'shot') {
     if (e.ecl && !e.ecl.seen) return 0;
-    if (e.ecl && (!e.ecl.canTakeDamage || !e.ecl.interactable)) return 0;
+    if (e.ecl && (e.ecl.invisible || !e.ecl.interactable)) return 0;
     const raw = source === 'shot'
       ? TH06_LOGIC.playerShotDamageForEnemy(damage, this.activeBombs.length > 0)
       : Math.trunc(damage);
@@ -1954,7 +2248,7 @@ class Game {
   }
   flushEnemyDamage() {
     for (const [e, entry] of this.pendingEnemyDamage) {
-      if (!this.enemies.includes(e) || (e.ecl && (!e.ecl.canTakeDamage || !e.ecl.interactable))) continue;
+      if (!this.enemies.includes(e) || (e.ecl && (e.ecl.invisible || !e.ecl.interactable))) continue;
       const capped = TH06_LOGIC.capEnemyFrameDamage(entry.total);
       let applied = capped;
       if (this.spellcardInfo?.isActive) {
@@ -1963,6 +2257,7 @@ class Game {
       this.addScore(Math.floor(capped / 5) * 10);
       if (entry.bombed) e.bombed = true;
       if (applied <= 0) continue;
+      if (e.ecl && !e.ecl.canTakeDamage) continue;
       e.hp -= applied;
     }
     this.pendingEnemyDamage.clear();
@@ -1983,27 +2278,44 @@ class Game {
     this.spawnEffectParticles(3, enemy.x, enemy.y, 1, 0xffffffff);
   }
   refreshHomingTargetFromEnemies() {
-    this.lastEnemyHit = TH06_LOGIC.chooseHomingTarget(this.enemies.filter((e) => this.enemyCanBeTargeted(e)));
+    let target = { x: -999, y: -999 };
+    for (const e of this.enemies) {
+      if (!this.enemyCanBeTargeted(e)) continue;
+      if (target.y < e.y) target = { x: e.x, y: e.y };
+    }
+    this.lastEnemyHit = target;
   }
   enemyDeathSound(enemy) {
     return SOUND.ENEMY_DEAD + ((enemy?.id || 0) & 1);
   }
   cancelBulletsNear(x, y, radius) {
-    this.enemyBullets = this.enemyBullets.filter((b) => {
+    const bullets = this.enemyBullets;
+    let write = 0;
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
       const half = this.enemyBulletHalfSize(b);
       const hitR = Math.max(half.x, half.y);
-      if (dist2({ x, y }, b) > (radius + hitR) ** 2) return true;
-      this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
-      return false;
-    });
+      if (dist2({ x, y }, b) > (radius + hitR) ** 2) {
+        bullets[write++] = b;
+      } else {
+        this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
+      }
+    }
+    bullets.length = write;
   }
   cancelBulletsInBox(x, y, w, h) {
-    this.enemyBullets = this.enemyBullets.filter((b) => {
+    const bullets = this.enemyBullets;
+    let write = 0;
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
       const half = this.enemyBulletHalfSize(b);
-      if (Math.abs(b.x - x) > w / 2 + half.x || Math.abs(b.y - y) > h / 2 + half.y) return true;
-      this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
-      return false;
-    });
+      if (Math.abs(b.x - x) > w / 2 + half.x || Math.abs(b.y - y) > h / 2 + half.y) {
+        bullets[write++] = b;
+      } else {
+        this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
+      }
+    }
+    bullets.length = write;
   }
   updateEnemies() {
     for (const e of this.enemies) {
@@ -2011,8 +2323,11 @@ class Game {
       if (e.ecl) this.stageRuntime.updateEnemy(this, e);
       else e.dead = true;
     }
-    for (const e of this.enemies.filter((e) => e.hp <= 0 || this.out(e))) {
-      if (e.hp <= 0) {
+    const shouldUseNormalDeath = (e) => e.hp <= 0 && (!e.ecl || this.stageRuntime.enemyUsesNormalDeath(e));
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (!(e.dead || shouldUseNormalDeath(e) || this.out(e))) continue;
+      if (!e.dead && e.hp <= 0) {
         if (e.ecl) {
           const keep = this.stageRuntime.killEnemy(this, e);
           if (keep) {
@@ -2024,7 +2339,14 @@ class Game {
       }
       e.dead = true;
     }
-    this.enemies = this.enemies.filter((e) => e.hp > 0 && !e.dead && !this.out(e));
+    let write = 0;
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (!e.dead && !this.out(e) && (e.hp > 0 || (e.ecl && !this.stageRuntime.enemyUsesNormalDeath(e)))) {
+        this.enemies[write++] = e;
+      }
+    }
+    this.enemies.length = write;
   }
   updatePlayerBullets() {
     for (let i = 0; i < this.player.laserTimers.length; i++) {
@@ -2043,6 +2365,7 @@ class Game {
       const canHit = b.state === 'fired' || (b.bulletType === BULLET_TYPE_ACCEL && b.state === 'collided');
       for (const e of this.enemies) {
         if (!canHit) break;
+        if (!this.enemyCanInteractWithPlayerShot(e)) continue;
         const bw = b.sx || b.r * 2;
         const bh = b.sy || b.r * 2;
         const hit = b.sx || e.ecl ? this.overlapsBox(b.x, b.y, bw, bh, e) : dist2(b, e) <= (b.r + e.radius) ** 2;
@@ -2060,7 +2383,14 @@ class Game {
         if ((b.hitAge || 0) >= (b.hitLife || 20)) b.dead = true;
       }
     }
-    this.playerBullets = this.playerBullets.filter((b) => !b.dead && b.age < b.life && (b.bulletType === BULLET_TYPE_LASER || this.inArcadeBounds(b.x, b.y, b.rect?.w || b.sx || b.r * 2, b.rect?.h || b.sy || b.r * 2)));
+    let write = 0;
+    for (let i = 0; i < this.playerBullets.length; i++) {
+      const b = this.playerBullets[i];
+      if (!b.dead && b.age < b.life && (b.bulletType === BULLET_TYPE_LASER || this.inArcadeBounds(b.x, b.y, b.rect?.w || b.sx || b.r * 2, b.rect?.h || b.sy || b.r * 2))) {
+        this.playerBullets[write++] = b;
+      }
+    }
+    this.playerBullets.length = write;
   }
   updatePlayerLaserBullet(b) {
     const orbs = this.orbs();
@@ -2137,31 +2467,55 @@ class Game {
       && Math.abs(this.player.y - b.y) <= half.y + padding + PLAYER_HITBOX_HALF.y;
   }
   updateEnemyBullets() {
-    for (const b of this.enemyBullets) {
+    const bullets = this.enemyBullets;
+    let write = 0;
+    let playerState = this.player.state;
+    const px = this.player.x;
+    const py = this.player.y;
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
       this.updateEnemyBulletMotion(b);
-      if (b.collisionActive === false) continue;
-      const playerCanGraze = this.player.state === 'alive' || this.player.state === 'invuln';
-      if (!b.grazed && this.playerOverlapsEnemyBullet(b, PLAYER_GRAZE_PADDING) && playerCanGraze) {
-        b.grazed = true;
-        this.scoreGraze(b);
+      let halfX;
+      let halfY;
+      if (b.grazeSize) {
+        halfX = b.grazeSize.x / 2;
+        halfY = b.grazeSize.y / 2;
+      } else {
+        halfX = b.hitR ?? b.r ?? 0;
+        halfY = halfX;
       }
-      if (this.playerOverlapsEnemyBullet(b) && this.player.state !== 'dead' && this.player.state !== 'spawning') {
-        if (this.player.state === 'alive') this.die();
-        b.y = 9999;
+      if (b.collisionActive !== false) {
+        const playerCanGraze = playerState === 'alive' || playerState === 'invuln';
+        const grazeOverlap = Math.abs(px - b.x) <= halfX + PLAYER_GRAZE_PADDING + PLAYER_HITBOX_HALF.x
+          && Math.abs(py - b.y) <= halfY + PLAYER_GRAZE_PADDING + PLAYER_HITBOX_HALF.y;
+        if (!b.grazed && grazeOverlap && playerCanGraze) {
+          b.grazed = true;
+          this.scoreGraze(b);
+        }
+        const hitOverlap = Math.abs(px - b.x) <= halfX + PLAYER_HITBOX_HALF.x
+          && Math.abs(py - b.y) <= halfY + PLAYER_HITBOX_HALF.y;
+        if (hitOverlap && playerState !== 'dead' && playerState !== 'spawning') {
+          if (playerState === 'alive') {
+            this.die();
+            playerState = this.player.state;
+          }
+          b.y = 9999;
+        }
       }
-    }
-    this.enemyBullets = this.enemyBullets.filter((b) => {
-      const half = this.enemyBulletHalfSize(b);
-      const w = b.rect?.w || half.x * 2 || 16;
-      const h = b.rect?.h || half.y * 2 || 16;
+      const w = b.rect?.w || halfX * 2 || 16;
+      const h = b.rect?.h || halfY * 2 || 16;
+      let keep = true;
       if (this.inArcadeBounds(b.x, b.y, w, h)) {
         b.outFrames = 0;
-        return true;
+      } else if (!(b.flags & (0x40 | 0x80 | 0x100 | 0x400 | 0x800)) && !b.outFrames) {
+        keep = false;
+      } else {
+        b.outFrames = (b.outFrames || 0) + 1;
+        keep = b.outFrames < 0x100;
       }
-      if (!(b.flags & (0x40 | 0x80 | 0x100 | 0x400 | 0x800)) && !b.outFrames) return false;
-      b.outFrames = (b.outFrames || 0) + 1;
-      return b.outFrames < 0x100;
-    });
+      if (keep) bullets[write++] = b;
+    }
+    bullets.length = write;
   }
   updateEnemyLasers() {
     for (const l of this.enemyLasers) {
@@ -2228,7 +2582,12 @@ class Game {
       if (l.startOffset >= 640) l.inUse = false;
       l.timer++;
     }
-    this.enemyLasers = this.enemyLasers.filter((l) => l.inUse);
+    let write = 0;
+    for (let i = 0; i < this.enemyLasers.length; i++) {
+      const laser = this.enemyLasers[i];
+      if (laser.inUse) this.enemyLasers[write++] = laser;
+    }
+    this.enemyLasers.length = write;
   }
   laserLocal(l, point) {
     const dx = point.x - l.x;
@@ -2378,7 +2737,12 @@ class Game {
         item.dead = true;
       }
     }
-    this.items = this.items.filter((i) => !i.dead && i.y < ITEM_DESPAWN_Y);
+    let write = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      if (!item.dead && item.y < ITEM_DESPAWN_Y) this.items[write++] = item;
+    }
+    this.items.length = write;
   }
   attractAllItems() {
     for (const item of this.items) {
@@ -2476,7 +2840,7 @@ class Game {
     this.player.deathbombFrame = 0;
     this.player.deathDropsDone = false;
     this.player.shotFrame = -1;
-    this.player.laserTimers = this.player.laserTimers.map(() => 2);
+    for (let i = 0; i < this.player.laserTimers.length; i++) this.player.laserTimers[i] = 2;
     this.player.prevHorizontalSpeed = 0;
     this.player.prevVerticalSpeed = 0;
     this.setPlayerAnimScript(ANM_SCRIPT_PLAYER_IDLE);
@@ -2557,14 +2921,19 @@ class Game {
       t.age++;
       t.y -= 0.25;
     }
-    this.texts = this.texts.filter((t) => t.age < t.life);
+    let write = 0;
+    for (let i = 0; i < this.texts.length; i++) {
+      const text = this.texts[i];
+      if (text.age < text.life) this.texts[write++] = text;
+    }
+    this.texts.length = write;
   }
-  spawnEffectParticles(effectId, x, y, count = 1, color = 0xffffffff) {
+  spawnEffectParticles(effectId, x, y, count = 1, color = 0xffffffff, options = {}) {
     const spawned = [];
     const spec = this.stageRuntime.effectSpec(effectId);
     for (let i = 0; i < Math.max(1, count | 0); i++) {
-      const angle = this.rng.f() * TAU - Math.PI;
-      const randomIndex = Math.floor(this.rng.range(4));
+      const angle = options.angle ?? (this.rng.f() * TAU - Math.PI);
+      const randomIndex = options.randomIndex ?? Math.floor(this.rng.range(4));
       const effect = {
         type: 'anmEffect',
         effectId,
@@ -2596,6 +2965,10 @@ class Game {
         effect.ax = -effect.vx / damp;
         effect.ay = -effect.vy / damp;
       }
+      if (options.vx != null) effect.vx = options.vx;
+      if (options.vy != null) effect.vy = options.vy;
+      if (options.ax != null) effect.ax = options.ax;
+      if (options.ay != null) effect.ay = options.ay;
       this.effects.push(effect);
       spawned.push(effect);
     }
@@ -2703,10 +3076,22 @@ class Game {
         effect.vy *= 0.982;
       }
     }
-    this.effects = this.effects.filter((effect) => {
-      if (effect.spellEffect && !this.enemies.some((e) => e.id === effect.enemyId)) return false;
-      return effect.age < effect.life;
-    });
+    let write = 0;
+    for (let i = 0; i < this.effects.length; i++) {
+      const effect = this.effects[i];
+      let keep = effect.age < effect.life;
+      if (keep && effect.spellEffect) {
+        keep = false;
+        for (const enemy of this.enemies) {
+          if (enemy.id === effect.enemyId) {
+            keep = true;
+            break;
+          }
+        }
+      }
+      if (keep) this.effects[write++] = effect;
+    }
+    this.effects.length = write;
   }
   updateBossUi() {
     const ui = this.bossUi;
@@ -2766,12 +3151,21 @@ class StageWebGLRenderer {
       preserveDrawingBuffer: true
     });
     this.ready = false;
+    this.failed = false;
+    this.lastError = '';
+    this.strideFloats = 11;
+    this.vertexCapacity = 4096;
+    this.vertices = new Float32Array(this.vertexCapacity * this.strideFloats);
+    this.vertexCount = 0;
+    this.currentBlendAdd = null;
     if (!this.gl) return;
     try {
       this.init();
       this.ready = true;
-    } catch {
+    } catch (error) {
+      this.lastError = String(error?.message || error);
       this.ready = false;
+      this.failed = true;
     }
   }
   init() {
@@ -2823,16 +3217,18 @@ class StageWebGLRenderer {
     this.uFogFar = gl.getUniformLocation(this.program, 'u_fogFar');
     this.stride = 11 * 4;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    const stride = this.stride;
-    gl.enableVertexAttribArray(this.aClip);
-    gl.vertexAttribPointer(this.aClip, 4, gl.FLOAT, false, stride, 0);
-    gl.enableVertexAttribArray(this.aUv);
-    gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, stride, 4 * 4);
-    gl.enableVertexAttribArray(this.aColor);
-    gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 6 * 4);
-    gl.enableVertexAttribArray(this.aDepth);
-    gl.vertexAttribPointer(this.aDepth, 1, gl.FLOAT, false, stride, 10 * 4);
+    this.bindAttribute(this.aClip, 4, 0);
+    this.bindAttribute(this.aUv, 2, 4 * 4);
+    this.bindAttribute(this.aColor, 4, 6 * 4);
+    this.bindAttribute(this.aDepth, 1, 10 * 4);
     gl.uniform1i(this.uTexture, 0);
+    clearWebglErrors(gl);
+  }
+  bindAttribute(location, size, offset) {
+    if (location < 0) return;
+    const gl = this.gl;
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, this.stride, offset);
   }
   createShader(type, source) {
     const gl = this.gl;
@@ -2855,11 +3251,13 @@ class StageWebGLRenderer {
     const gl = this.gl;
     if (!gl || gl.isContextLost?.()) {
       this.ready = false;
+      this.lastError = 'stage webgl context lost';
       return false;
     }
     const err = gl.getError();
     if (err && err !== gl.NO_ERROR) {
       this.ready = false;
+      this.lastError = `stage webgl ${webglErrorName(gl, err)}`;
       return false;
     }
     return true;
@@ -2870,24 +3268,26 @@ class StageWebGLRenderer {
     if (!image?.complete || !image.naturalWidth) return false;
     if (!this.texture) this.texture = gl.createTexture();
     this.textureImage = image;
-    if (!this.uploadCanvas) {
-      this.uploadCanvas = document.createElement('canvas');
-      this.uploadCtx = this.uploadCanvas.getContext('2d', { alpha: true });
+    clearWebglErrors(gl);
+    try {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    } catch (error) {
+      this.fail(error);
+      return false;
     }
-    this.uploadCanvas.width = image.naturalWidth;
-    this.uploadCanvas.height = image.naturalHeight;
-    this.uploadCtx.clearRect(0, 0, this.uploadCanvas.width, this.uploadCanvas.height);
-    this.uploadCtx.drawImage(image, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.uploadCanvas);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-    return this.healthy();
+    if (!this.healthy()) {
+      this.fail(this.lastError || 'stage webgl texture upload failed');
+      return false;
+    }
+    return true;
   }
   projectClip(world, camera) {
     const dx = world.x - camera.eye.x;
@@ -2902,7 +3302,33 @@ class StageWebGLRenderer {
     const zNdc = clamp((vz - 100) / (10000 - 100), 0, 1) * 2 - 1;
     return { x: ndcX * vz, y: ndcY * vz, z: zNdc * vz, w: vz, depth: vz };
   }
-  quadVerticesFromScreen(rect, corners, image) {
+  ensureVertexCapacity(extraVertices) {
+    const needed = this.vertexCount + extraVertices;
+    if (needed <= this.vertexCapacity) return;
+    while (this.vertexCapacity < needed) this.vertexCapacity *= 2;
+    this.vertices = new Float32Array(this.vertexCapacity * this.strideFloats);
+  }
+  appendVertex(point, u, v, rgba) {
+    const w = Math.max(1, point.z || 1);
+    const ndcX = ((point.x - PLAYFIELD.x) / PLAYFIELD.width) * 2 - 1;
+    const ndcY = 1 - ((point.y - PLAYFIELD.y) / PLAYFIELD.height) * 2;
+    const zNdc = clamp((w - 100) / (10000 - 100), 0, 1) * 2 - 1;
+    let off = this.vertexCount * this.strideFloats;
+    const out = this.vertices;
+    out[off++] = ndcX * w;
+    out[off++] = ndcY * w;
+    out[off++] = zNdc * w;
+    out[off++] = w;
+    out[off++] = u;
+    out[off++] = v;
+    out[off++] = rgba[0];
+    out[off++] = rgba[1];
+    out[off++] = rgba[2];
+    out[off++] = rgba[3];
+    out[off++] = w;
+    this.vertexCount++;
+  }
+  appendStageQuad(rect, corners, image) {
     const sx0 = rect.x / image.naturalWidth;
     const sx1 = (rect.x + rect.w) / image.naturalWidth;
     const sy0 = rect.y / image.naturalHeight;
@@ -2910,38 +3336,34 @@ class StageWebGLRenderer {
     const c = colorParts(rect.color ?? 0xffffffff);
     const alpha = (rect.alpha ?? Math.round(c.a * 255)) / 255;
     const color = [c.r / 255, c.g / 255, c.b / 255, alpha];
-    const points = [
-      { ...corners.tl, u: sx0, v: sy0 },
-      { ...corners.tr, u: sx1, v: sy0 },
-      { ...corners.bl, u: sx0, v: sy1 },
-      { ...corners.br, u: sx1, v: sy1 }
-    ];
-    const out = [];
-    for (const point of points) {
-      const w = Math.max(1, point.z || 1);
-      const ndcX = ((point.x - PLAYFIELD.x) / PLAYFIELD.width) * 2 - 1;
-      const ndcY = 1 - ((point.y - PLAYFIELD.y) / PLAYFIELD.height) * 2;
-      const zNdc = clamp((w - 100) / (10000 - 100), 0, 1) * 2 - 1;
-      out.push(ndcX * w, ndcY * w, zNdc * w, w, point.u, point.v, ...color, w);
-    }
-    return out;
+    this.ensureVertexCapacity(6);
+    this.appendVertex(corners.tl, sx0, sy0, color);
+    this.appendVertex(corners.tr, sx1, sy0, color);
+    this.appendVertex(corners.bl, sx0, sy1, color);
+    this.appendVertex(corners.tr, sx1, sy0, color);
+    this.appendVertex(corners.br, sx1, sy1, color);
+    this.appendVertex(corners.bl, sx0, sy1, color);
+  }
+  flush() {
+    if (!this.vertexCount) return;
+    const gl = this.gl;
+    gl.blendFunc(gl.SRC_ALPHA, this.currentBlendAdd ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
+    gl.bufferData(gl.ARRAY_BUFFER, this.vertices.subarray(0, this.vertexCount * this.strideFloats), gl.STREAM_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+    this.vertexCount = 0;
   }
   render(std, fog, image, projectQuad) {
-    if (!this.ready || !std || !image || !this.ensureTexture(image)) return false;
+    if (this.failed || !this.ready || !std || !image || !this.ensureTexture(image)) return false;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.program);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.enableVertexAttribArray(this.aClip);
-    gl.vertexAttribPointer(this.aClip, 4, gl.FLOAT, false, this.stride, 0);
-    gl.enableVertexAttribArray(this.aUv);
-    gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, this.stride, 4 * 4);
-    gl.enableVertexAttribArray(this.aColor);
-    gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, this.stride, 6 * 4);
-    gl.enableVertexAttribArray(this.aDepth);
-    gl.vertexAttribPointer(this.aDepth, 1, gl.FLOAT, false, this.stride, 10 * 4);
+    this.bindAttribute(this.aClip, 4, 0);
+    this.bindAttribute(this.aUv, 2, 4 * 4);
+    this.bindAttribute(this.aColor, 4, 6 * 4);
+    this.bindAttribute(this.aDepth, 1, 10 * 4);
     gl.clearColor(0, 0, 0, 0);
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -2956,6 +3378,8 @@ class StageWebGLRenderer {
     const frame = std.frame ?? 0;
     const cam = std.camera(frame);
     let drew = false;
+    this.vertexCount = 0;
+    this.currentBlendAdd = null;
     for (let zLevel = 0; zLevel < 4; zLevel++) {
       for (const inst of std.instances) {
         const obj = std.objects[inst.id];
@@ -2975,26 +3399,303 @@ class StageWebGLRenderer {
             rect
           );
           if (!corners) continue;
-          const xs = [corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x];
-          const ys = [corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y];
-          const x0 = Math.min(...xs);
-          const x1 = Math.max(...xs);
-          const y0 = Math.min(...ys);
-          const y1 = Math.max(...ys);
+          const x0 = Math.min(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
+          const x1 = Math.max(corners.tl.x, corners.tr.x, corners.bl.x, corners.br.x);
+          const y0 = Math.min(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
+          const y1 = Math.max(corners.tl.y, corners.tr.y, corners.bl.y, corners.br.y);
           if (x1 < PLAYFIELD.x - 32 || x0 > PLAYFIELD.right + 32 || y1 < PLAYFIELD.y - 32 || y0 > PLAYFIELD.bottom + 32) continue;
-          const vertices = this.quadVerticesFromScreen(rect, corners, image);
-          if (!vertices) continue;
-          gl.blendFunc(gl.SRC_ALPHA, rect.blendAdd ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
-          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STREAM_DRAW);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          const blendAdd = !!rect.blendAdd;
+          if (this.currentBlendAdd !== null && this.currentBlendAdd !== blendAdd) this.flush();
+          this.currentBlendAdd = blendAdd;
+          this.appendStageQuad(rect, corners, image);
           drew = true;
         }
       }
     }
+    this.flush();
     gl.flush();
     if (!this.healthy()) return false;
     gl.disable(gl.BLEND);
     return drew;
+  }
+  fail(error) {
+    this.failed = true;
+    this.ready = false;
+    this.lastError = String(error?.message || error);
+  }
+}
+
+class SpriteBatch2D {
+  constructor(width = GAME_WIDTH, height = GAME_HEIGHT) {
+    this.width = width;
+    this.height = height;
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.gl = this.canvas.getContext('webgl', {
+      alpha: true,
+      antialias: false,
+      depth: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true
+    });
+    this.ready = false;
+    this.failed = false;
+    this.lastError = '';
+    this.textures = new WeakMap();
+    this.strideFloats = 8;
+    this.vertexCapacity = 6144;
+    this.vertices = new Float32Array(this.vertexCapacity * this.strideFloats);
+    this.vertexCount = 0;
+    this.currentTexture = null;
+    this.currentBlendAdd = null;
+    this.used = false;
+    this.flushCount = 0;
+    if (!this.gl) return;
+    try {
+      this.init();
+      this.ready = true;
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+  init() {
+    const gl = this.gl;
+    const vertexSource = `
+      attribute vec2 a_pos;
+      attribute vec2 a_uv;
+      attribute vec4 a_color;
+      varying vec2 v_uv;
+      varying vec4 v_color;
+      void main() {
+        gl_Position = vec4(a_pos, 0.0, 1.0);
+        v_uv = a_uv;
+        v_color = a_color;
+      }
+    `;
+    const fragmentSource = `
+      precision mediump float;
+      uniform sampler2D u_texture;
+      varying vec2 v_uv;
+      varying vec4 v_color;
+      void main() {
+        vec4 tex = texture2D(u_texture, v_uv);
+        if (tex.a <= 0.01) discard;
+        gl_FragColor = tex * v_color;
+      }
+    `;
+    this.program = this.createProgram(vertexSource, fragmentSource);
+    this.buffer = gl.createBuffer();
+    this.aPos = gl.getAttribLocation(this.program, 'a_pos');
+    this.aUv = gl.getAttribLocation(this.program, 'a_uv');
+    this.aColor = gl.getAttribLocation(this.program, 'a_color');
+    this.uTexture = gl.getUniformLocation(this.program, 'u_texture');
+    gl.useProgram(this.program);
+    gl.uniform1i(this.uTexture, 0);
+    clearWebglErrors(gl);
+  }
+  createShader(type, source) {
+    const gl = this.gl;
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) || 'sprite shader compile failed');
+    return shader;
+  }
+  createProgram(vertexSource, fragmentSource) {
+    const gl = this.gl;
+    const program = gl.createProgram();
+    gl.attachShader(program, this.createShader(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, this.createShader(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'sprite program link failed');
+    return program;
+  }
+  fail(error) {
+    this.failed = true;
+    this.ready = false;
+    this.lastError = String(error?.message || error);
+  }
+  healthy() {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost?.()) {
+      this.ready = false;
+      this.lastError = 'sprite webgl context lost';
+      return false;
+    }
+    const err = gl.getError();
+    if (err && err !== gl.NO_ERROR) {
+      this.ready = false;
+      this.lastError = `sprite webgl ${webglErrorName(gl, err)}`;
+      return false;
+    }
+    return true;
+  }
+  begin() {
+    if (this.failed || !this.ready) return false;
+    const gl = this.gl;
+    if (!gl || gl.isContextLost?.()) {
+      this.fail('sprite webgl context lost');
+      return false;
+    }
+    this.vertexCount = 0;
+    this.currentTexture = null;
+    this.currentBlendAdd = null;
+    this.used = false;
+    this.flushCount = 0;
+    clearWebglErrors(gl);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    const stride = this.strideFloats * 4;
+    if (this.aPos >= 0) {
+      gl.enableVertexAttribArray(this.aPos);
+      gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, stride, 0);
+    }
+    if (this.aUv >= 0) {
+      gl.enableVertexAttribArray(this.aUv);
+      gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, stride, 2 * 4);
+    }
+    if (this.aColor >= 0) {
+      gl.enableVertexAttribArray(this.aColor);
+      gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 4 * 4);
+    }
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    return true;
+  }
+  ensureTexture(image) {
+    if (!image?.complete || !image.naturalWidth) return null;
+    let texture = this.textures.get(image);
+    if (texture) return texture;
+    const gl = this.gl;
+    texture = gl.createTexture();
+    clearWebglErrors(gl);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (!this.healthy()) {
+      this.fail('sprite webgl texture upload failed');
+      return null;
+    }
+    this.textures.set(image, texture);
+    return texture;
+  }
+  ensureVertexCapacity(extraVertices) {
+    const needed = this.vertexCount + extraVertices;
+    if (needed <= this.vertexCapacity) return;
+    while (this.vertexCapacity < needed) this.vertexCapacity *= 2;
+    this.vertices = new Float32Array(this.vertexCapacity * this.strideFloats);
+  }
+  appendVertex(x, y, u, v, color) {
+    let off = this.vertexCount * this.strideFloats;
+    const out = this.vertices;
+    out[off++] = x / this.width * 2 - 1;
+    out[off++] = 1 - y / this.height * 2;
+    out[off++] = u;
+    out[off++] = v;
+    out[off++] = color[0];
+    out[off++] = color[1];
+    out[off++] = color[2];
+    out[off++] = color[3];
+    this.vertexCount++;
+  }
+  flush() {
+    if (!this.vertexCount) return true;
+    try {
+      const gl = this.gl;
+      gl.blendFunc(gl.SRC_ALPHA, this.currentBlendAdd ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
+      gl.bufferData(gl.ARRAY_BUFFER, this.vertices.subarray(0, this.vertexCount * this.strideFloats), gl.STREAM_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+      this.vertexCount = 0;
+      this.flushCount++;
+      return this.healthy();
+    } catch (error) {
+      this.fail(error);
+      return false;
+    }
+  }
+  drawFrame(image, frame, x, y, options = {}) {
+    if (this.failed || !this.ready || !frame || !image) return false;
+    try {
+      const texture = this.ensureTexture(image);
+      if (!texture) return false;
+      const blendAdd = options.blend ? options.blend === 'lighter' : !!frame.blendAdd;
+      if ((this.currentTexture && this.currentTexture !== texture) || (this.currentBlendAdd !== null && this.currentBlendAdd !== blendAdd)) {
+        if (!this.flush()) return false;
+      }
+      this.currentTexture = texture;
+      this.currentBlendAdd = blendAdd;
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      const sx = frame.x || 0;
+      const sy = frame.y || 0;
+      const sw = Math.max(0.001, frame.w || 1);
+      const sh = Math.max(0.001, frame.h || 1);
+      const scaleMul = options.scaleMultiplier ?? 1;
+      const scaleX = (options.scaleX ?? frame.scaleX ?? 1) * scaleMul;
+      const scaleY = (options.scaleY ?? frame.scaleY ?? 1) * scaleMul;
+      const w = Math.max(0.001, Math.abs(sw * scaleX));
+      const h = Math.max(0.001, Math.abs(sh * scaleY));
+      const drawX = x + (frame.vmX || 0) + (frame.posOffsetX || 0) + (options.offsetX || 0);
+      const drawY = y + (frame.vmY || 0) + (frame.posOffsetY || 0) + (options.offsetY || 0);
+      const anchorX = frame.anchorTopLeft ? 0 : w / 2;
+      const anchorY = frame.anchorTopLeft ? 0 : h / 2;
+      const alpha = (options.alpha ?? 1) * ((frame.alpha ?? 255) / 255);
+      if (alpha <= 0) return true;
+      const c = colorParts((options.color ?? frame.color ?? 0xffffffff) >>> 0);
+      const color = [c.r / 255, c.g / 255, c.b / 255, alpha * c.a];
+      let u0 = sx / image.naturalWidth;
+      let u1 = (sx + sw) / image.naturalWidth;
+      let v0 = sy / image.naturalHeight;
+      let v1 = (sy + sh) / image.naturalHeight;
+      if (scaleX < 0 || frame.flipX) [u0, u1] = [u1, u0];
+      if (scaleY < 0 || frame.flipY) [v0, v1] = [v1, v0];
+      const rotation = options.rotation ?? frame.rotation ?? 0;
+      const cos = Math.cos(rotation);
+      const sin = Math.sin(rotation);
+      const corners = [
+        { x: -anchorX, y: -anchorY, u: u0, v: v0 },
+        { x: w - anchorX, y: -anchorY, u: u1, v: v0 },
+        { x: -anchorX, y: h - anchorY, u: u0, v: v1 },
+        { x: w - anchorX, y: h - anchorY, u: u1, v: v1 }
+      ];
+      this.ensureVertexCapacity(6);
+      const add = (point) => {
+        const px = drawX + point.x * cos - point.y * sin;
+        const py = drawY + point.x * sin + point.y * cos;
+        this.appendVertex(px, py, point.u, point.v, color);
+      };
+      add(corners[0]);
+      add(corners[1]);
+      add(corners[2]);
+      add(corners[1]);
+      add(corners[3]);
+      add(corners[2]);
+      this.used = true;
+      return true;
+    } catch (error) {
+      this.fail(error);
+      return false;
+    }
+  }
+  end(ctx) {
+    if (!this.flush()) return false;
+    if (this.used) ctx.drawImage(this.canvas, 0, 0);
+    return true;
+  }
+  abort() {
+    this.vertexCount = 0;
+    this.used = false;
   }
 }
 
@@ -3008,11 +3709,121 @@ class Renderer {
     this.tintCanvas = document.createElement('canvas');
     this.tintCtx = this.tintCanvas.getContext('2d');
     this.stageWebgl = STAGE_WEBGL_ENABLED ? new StageWebGLRenderer() : null;
+    this.spriteBatch = SPRITE_WEBGL_ENABLED ? new SpriteBatch2D(GAME_WIDTH, GAME_HEIGHT) : null;
+    this.spriteBatchDisabled = !SPRITE_WEBGL_ENABLED;
+    this.spriteBatchDisabledReason = '';
+    this.perfSamples = { update: [], draw: [], frame: [], input: [] };
+    this.perfSampleLimit = 900;
+    this.perf = {
+      lastUpdateMs: 0,
+      lastDrawMs: 0,
+      lastFrameMs: 0,
+      maxUpdateMs: 0,
+      maxDrawMs: 0,
+      maxFrameMs: 0,
+      lastSteps: 0,
+      lastDroppedFrames: 0,
+      totalDroppedFrames: 0,
+      lastRenderSkipped: false,
+      totalRenderSkips: 0,
+      accumulatorMs: 0,
+      lastInputLatencyMs: 0,
+      maxInputLatencyMs: 0,
+      lastDrawError: '',
+      stageWebgl: false,
+      stageWebglError: '',
+      spriteWebgl: false,
+      spriteWebglError: ''
+    };
+  }
+  recordPerfSample(kind, value) {
+    const samples = this.perfSamples[kind];
+    if (!samples || !Number.isFinite(value)) return;
+    samples.push(value);
+    if (samples.length > this.perfSampleLimit) samples.shift();
+  }
+  resetPerf() {
+    for (const key of Object.keys(this.perfSamples)) this.perfSamples[key].length = 0;
+    this.perf.maxUpdateMs = 0;
+    this.perf.maxDrawMs = 0;
+    this.perf.maxFrameMs = 0;
+    this.perf.maxInputLatencyMs = 0;
+    this.perf.totalDroppedFrames = 0;
+    this.perf.totalRenderSkips = 0;
+    this.perf.lastDroppedFrames = 0;
+    this.perf.lastRenderSkipped = false;
+  }
+  sampleSummary(kind) {
+    const values = this.perfSamples[kind] || [];
+    if (!values.length) return { avg: 0, p95: 0, max: 0, count: 0 };
+    const sorted = values.slice().sort((a, b) => a - b);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    return {
+      avg: total / values.length,
+      p95: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))],
+      max: sorted[sorted.length - 1],
+      count: values.length
+    };
+  }
+  fallbackReason() {
+    return [this.stageWebgl?.lastError, this.spriteBatchDisabledReason, this.spriteBatch?.lastError].filter(Boolean).join('; ');
+  }
+  disableSpriteBatch(reason) {
+    this.spriteBatchDisabled = true;
+    this.spriteBatchDisabledReason = reason || 'sprite webgl disabled';
+    if (this.spriteBatch) this.spriteBatch.abort();
+  }
+  recoverSpriteBatch(force = false) {
+    if (this.spriteBatchDisabled) return;
+    if (!SPRITE_WEBGL_ENABLED) return;
+    if (!force && this.spriteBatch && !this.spriteBatch.failed && this.spriteBatch.ready) return;
+    this.spriteBatch = new SpriteBatch2D(GAME_WIDTH, GAME_HEIGHT);
+  }
+  beginSpriteBatch() {
+    if (this.spriteBatchDisabled) return null;
+    this.recoverSpriteBatch();
+    let batch = this.spriteBatch;
+    if (!batch || batch.failed || !batch.ready) return null;
+    if (batch.begin()) return batch;
+    const firstError = batch.lastError;
+    this.recoverSpriteBatch(true);
+    batch = this.spriteBatch;
+    if (batch && !batch.failed && batch.ready && batch.begin()) return batch;
+    this.perf.spriteWebglError = batch?.lastError || firstError || 'sprite webgl begin failed';
+    return null;
+  }
+  rendererMode() {
+    if (!RENDERER_CAN_TRY_WEBGL || RENDERER_PREFERENCE === 'canvas') return 'canvas';
+    const stageReady = !!this.stageWebgl?.ready && !this.stageWebgl.failed;
+    const spriteReady = !this.spriteBatchDisabled && !!this.spriteBatch?.ready && !this.spriteBatch.failed;
+    if (stageReady && spriteReady) return 'sprite-webgl';
+    if (stageReady) return 'stage-webgl';
+    if (spriteReady) return 'sprite-webgl';
+    if (this.stageWebgl?.failed || this.spriteBatch?.failed) return 'fallback-canvas';
+    return 'canvas';
+  }
+  perfSummary() {
+    return {
+      update: this.sampleSummary('update'),
+      draw: this.sampleSummary('draw'),
+      frame: this.sampleSummary('frame'),
+      input: this.sampleSummary('input'),
+      droppedFrames: this.perf.totalDroppedFrames,
+      rendererMode: this.rendererMode(),
+      fallbackReason: this.fallbackReason()
+    };
   }
   draw() {
+    const start = performance.now();
     const g = this.game;
+    this.perf.spriteWebgl = false;
+    this.perf.spriteWebglError = '';
     this.ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    if (['title', 'difficulty', 'character'].includes(g.phase)) return this.menu();
+    if (['title', 'difficulty', 'character'].includes(g.phase)) {
+      this.menu();
+      this.recordDrawPerf(start);
+      return;
+    }
     const shake = this.shakeOffset();
     this.ctx.save();
     this.ctx.translate(shake.x, shake.y);
@@ -3021,6 +3832,13 @@ class Renderer {
     this.ctx.restore();
     this.hud();
     this.overlay();
+    this.recordDrawPerf(start);
+  }
+  recordDrawPerf(start) {
+    const elapsed = performance.now() - start;
+    this.perf.lastDrawMs = elapsed;
+    this.perf.maxDrawMs = Math.max(this.perf.maxDrawMs, elapsed);
+    this.recordPerfSample('draw', elapsed);
   }
   shakeOffset() {
     const g = this.game;
@@ -3093,6 +3911,55 @@ class Renderer {
     return !!anm?.scripts?.has?.(scriptId);
   }
   tintedSprite(img, sx, sy, sw, sh, dx, dy, dw, dh, color) {
+    const cached = this.tintedSpriteCanvas(img, sx, sy, sw, sh, color);
+    if (cached) {
+      this.ctx.drawImage(cached, 0, 0, cached.width, cached.height, dx, dy, dw, dh);
+      return;
+    }
+    this.drawTintedSpriteUncached(img, sx, sy, sw, sh, dx, dy, dw, dh, color);
+  }
+  tintedSpriteCanvas(img, sx, sy, sw, sh, color) {
+    if (!img || typeof document === 'undefined') return null;
+    if (!this.tintCache) {
+      this.tintCache = new Map();
+      this.tintCacheOrder = [];
+      this.tintImageIds = new WeakMap();
+      this.tintNextImageId = 1;
+      this.tintCacheLimit = 384;
+    }
+    let imageId = this.tintImageIds.get(img);
+    if (!imageId) {
+      imageId = this.tintNextImageId++;
+      this.tintImageIds.set(img, imageId);
+    }
+    const width = Math.max(1, Math.ceil(sw));
+    const height = Math.max(1, Math.ceil(sh));
+    const key = `${imageId}:${sx}:${sy}:${sw}:${sh}:${color >>> 0}`;
+    const hit = this.tintCache.get(key);
+    if (hit) return hit;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const c = colorParts(color);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height);
+    ctx.globalCompositeOperation = 'source-over';
+    this.tintCache.set(key, canvas);
+    this.tintCacheOrder.push(key);
+    while (this.tintCacheOrder.length > this.tintCacheLimit) {
+      const oldKey = this.tintCacheOrder.shift();
+      this.tintCache.delete(oldKey);
+    }
+    return canvas;
+  }
+  drawTintedSpriteUncached(img, sx, sy, sw, sh, dx, dy, dw, dh, color) {
     const c = colorParts(color);
     this.tintCanvas.width = Math.max(1, Math.ceil(sw));
     this.tintCanvas.height = Math.max(1, Math.ceil(sh));
@@ -3107,6 +3974,29 @@ class Renderer {
     tctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
     tctx.globalCompositeOperation = 'source-over';
     this.ctx.drawImage(this.tintCanvas, 0, 0, sw, sh, dx, dy, dw, dh);
+  }
+  drawAnmFrameDirect(key, frame, x, y, options = {}) {
+    if (!frame) return false;
+    const img = this.assets[key || frame.imageKey];
+    if (!img) return false;
+    const scaleMul = options.scaleMultiplier ?? 1;
+    const scaleX = (options.scaleX ?? frame.scaleX ?? 1) * scaleMul;
+    const scaleY = (options.scaleY ?? frame.scaleY ?? 1) * scaleMul;
+    const rotation = options.rotation ?? frame.rotation ?? 0;
+    const blend = options.blend ?? (frame.blendAdd ? 'lighter' : 'source-over');
+    const color = (options.color ?? frame.color ?? 0xffffffff) >>> 0;
+    const alpha = (options.alpha ?? 1) * ((frame.alpha ?? 255) / 255);
+    if (rotation || blend !== 'source-over' || color !== 0xffffffff || alpha !== 1 || frame.flipX || frame.flipY || scaleX <= 0 || scaleY <= 0) return false;
+    const sw = frame.w;
+    const sh = frame.h;
+    const w = Math.max(0.001, Math.abs(sw * scaleX));
+    const h = Math.max(0.001, Math.abs(sh * scaleY));
+    const drawX = x + (frame.vmX || 0) + (frame.posOffsetX || 0) + (options.offsetX || 0);
+    const drawY = y + (frame.vmY || 0) + (frame.posOffsetY || 0) + (options.offsetY || 0);
+    const anchorX = frame.anchorTopLeft ? 0 : w / 2;
+    const anchorY = frame.anchorTopLeft ? 0 : h / 2;
+    this.ctx.drawImage(img, frame.x, frame.y, sw, sh, drawX - anchorX, drawY - anchorY, w, h);
+    return true;
   }
   playerSprite(spec, x, y, scale = 1, alpha = 1, frameSeed = this.game.stageFrame, scaleY = scale, scriptId = ANM_SCRIPT_PLAYER_IDLE) {
     const anmIndex = spec.sheet === 'player01' ? 1 : 0;
@@ -3464,9 +4354,25 @@ class Renderer {
     if (!img) return;
     const projectQuad = (x, y, z, w, h, anchorTopLeft, rect) =>
       this.stageQuadCornersTransformed(x, y, z, w, h, anchorTopLeft, camera, rect);
-    if (STAGE_WEBGL_ENABLED && this.stageWebgl?.render(std, fog, img, projectQuad)) {
-      ctx.drawImage(this.stageWebgl.canvas, PLAYFIELD.x, PLAYFIELD.y);
-      return;
+    this.perf.stageWebgl = false;
+    if (STAGE_WEBGL_ENABLED && this.stageWebgl && !this.stageWebgl.failed) {
+      try {
+        if (this.stageWebgl.render(std, fog, img, projectQuad)) {
+          ctx.drawImage(this.stageWebgl.canvas, PLAYFIELD.x, PLAYFIELD.y);
+          this.perf.stageWebgl = true;
+          return;
+        }
+        if (this.stageWebgl.failed || !this.stageWebgl.ready) {
+          this.perf.stageWebglError = this.stageWebgl.lastError;
+          if (RENDERER_PREFERENCE === 'auto') this.disableSpriteBatch('sprite webgl disabled after stage webgl fallback');
+          else this.recoverSpriteBatch();
+        }
+      } catch (error) {
+        this.stageWebgl.fail(error);
+        this.perf.stageWebglError = this.stageWebgl.lastError;
+        if (RENDERER_PREFERENCE === 'auto') this.disableSpriteBatch('sprite webgl disabled after stage webgl fallback');
+        else this.recoverSpriteBatch();
+      }
     }
     ctx.save();
     ctx.beginPath();
@@ -3506,42 +4412,16 @@ class Renderer {
     this.ctx.beginPath();
     this.ctx.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
     this.ctx.clip();
-    for (const item of g.items) this.itemSprite(item);
+    for (const b of g.playerBullets) if (b.state === 'collided') this.playerBullet(b);
     for (const e of g.enemies) this.enemySprite(e);
-    for (const effect of g.effects) this.effectSprite(effect);
-    for (const b of g.playerBullets) this.playerBullet(b);
-    for (const l of g.enemyLasers) this.enemyLaser(l);
-    for (const b of g.enemyBullets) this.enemyBullet(PLAYFIELD.x + b.x, PLAYFIELD.y + b.y, b);
+    for (const b of g.playerBullets) if (b.state !== 'collided') this.playerBullet(b);
     for (const bomb of g.activeBombs) this.bombEffect(bomb);
-    const spec = g.spec();
-    if (g.player.state !== 'dead') {
-      const orbs = g.orbs();
-      if (orbs) {
-        this.optionOrb(spec, PLAYFIELD.x + orbs.left.x, PLAYFIELD.y + orbs.left.y, 0);
-        this.optionOrb(spec, PLAYFIELD.x + orbs.right.x, PLAYFIELD.y + orbs.right.y, 1);
-      }
-      let alpha = g.player.state === 'invuln' && g.stageFrame % 8 < 4 ? 0.35 : 1;
-      let scaleX = 1;
-      let scaleY = 1;
-      if (g.player.state === 'spawning') {
-        const t = clamp(g.player.spawnFrame / PLAYER_SPAWN_ANIM_FRAMES, 0, 1);
-        alpha = t;
-        scaleX = Math.max(0.001, t);
-        scaleY = 1 + 2 * (1 - t);
-      }
-      this.playerSprite(
-        spec,
-        PLAYFIELD.x + g.player.x,
-        PLAYFIELD.y + g.player.y,
-        scaleX,
-        alpha,
-        g.player.animDrawFrame ?? g.stageFrame,
-        scaleY,
-        g.player.animScript ?? ANM_SCRIPT_PLAYER_IDLE
-      );
-      if (g.player.state === 'deathbomb') this.deathbombMarker(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
-      if (g.player.focus && (g.player.state === 'alive' || g.player.state === 'invuln')) this.hitPoint(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
-    }
+    this.playerActor();
+    this.effectsLayer();
+    for (const l of g.enemyLasers) this.enemyLaser(l);
+    for (const item of g.items) this.itemSprite(item);
+    this.enemyBulletsLayer();
+    this.playerHitboxOverlay();
     if (g.flash > 0) this.rect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height, '#fff', g.flash / 90);
     for (const t of g.texts) {
       this.ctx.globalAlpha = Math.max(0, 1 - t.age / t.life);
@@ -3549,6 +4429,125 @@ class Renderer {
       this.ctx.globalAlpha = 1;
     }
     this.ctx.restore();
+  }
+  effectsLayer() {
+    const effects = this.game.effects;
+    if (!effects.length) return;
+    const batch = this.beginSpriteBatch();
+    if (!batch) {
+      for (const effect of effects) this.effectSprite(effect);
+      return;
+    }
+    let segmentStart = 0;
+    for (let i = 0; i < effects.length; i++) {
+      const effect = effects[i];
+      const frame = this.batchableEffectFrame(effect);
+      if (frame) {
+        const image = this.assets[frame.imageKey];
+        const alpha = Math.max(0, 1 - Math.max(0, effect.age / Math.max(1, effect.life) - 0.92) / 0.08);
+        const flushBefore = batch.flushCount;
+        if (image && batch.drawFrame(image, frame, PLAYFIELD.x + effect.x, PLAYFIELD.y + effect.y, { color: effect.color, alpha })) {
+          if (batch.flushCount !== flushBefore) segmentStart = i;
+          this.perf.spriteWebgl = true;
+          continue;
+        }
+        batch.abort();
+        this.perf.spriteWebglError = batch.lastError;
+        for (let j = segmentStart; j < effects.length; j++) this.effectSprite(effects[j]);
+        return;
+      }
+      if (!batch.end(this.ctx)) {
+        this.perf.spriteWebglError = batch.lastError;
+        for (let j = segmentStart; j < effects.length; j++) this.effectSprite(effects[j]);
+        return;
+      }
+      this.effectSprite(effect);
+      segmentStart = i + 1;
+      if (!batch.begin()) {
+        for (let j = segmentStart; j < effects.length; j++) this.effectSprite(effects[j]);
+        return;
+      }
+    }
+    if (!batch.end(this.ctx)) {
+      this.perf.spriteWebglError = batch.lastError;
+      for (let j = segmentStart; j < effects.length; j++) this.effectSprite(effects[j]);
+    }
+  }
+  batchableEffectFrame(effect) {
+    if (effect.type !== 'anmEffect' || effect.age < 0) return null;
+    return this.game.stageRuntime?.effectFrame?.(effect.effectId, effect.age, effect.randomIndex || 0, effect.color) || null;
+  }
+  enemyBulletsLayer() {
+    const bullets = this.game.enemyBullets;
+    if (!bullets.length) return;
+    const batch = this.beginSpriteBatch();
+    if (!batch) {
+      for (const b of bullets) this.enemyBullet(PLAYFIELD.x + b.x, PLAYFIELD.y + b.y, b);
+      return;
+    }
+    let segmentStart = 0;
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
+      if (!b.rect) continue;
+      const image = this.assets[b.rect.imageKey || 'etama3'];
+      const rotation = b.rect.autoRotate ? b.angle - Math.PI / 2 : 0;
+      const flushBefore = batch.flushCount;
+      if (!image || !batch.drawFrame(image, b.rect, PLAYFIELD.x + b.x, PLAYFIELD.y + b.y, { rotation })) {
+        batch.abort();
+        this.perf.spriteWebglError = batch.lastError;
+        for (let j = segmentStart; j < bullets.length; j++) {
+          const bullet = bullets[j];
+          this.enemyBullet(PLAYFIELD.x + bullet.x, PLAYFIELD.y + bullet.y, bullet);
+        }
+        return;
+      }
+      if (batch.flushCount !== flushBefore) segmentStart = i;
+      this.perf.spriteWebgl = true;
+    }
+    if (!batch.end(this.ctx)) {
+      this.perf.spriteWebglError = batch.lastError;
+      for (let j = segmentStart; j < bullets.length; j++) {
+        const b = bullets[j];
+        this.enemyBullet(PLAYFIELD.x + b.x, PLAYFIELD.y + b.y, b);
+      }
+    }
+  }
+  playerActor() {
+    const g = this.game;
+    if (g.player.state === 'dead') return;
+    const spec = g.spec();
+    let alpha = g.player.state === 'invuln' && g.stageFrame % 8 < 4 ? 0.35 : 1;
+    let scaleX = 1;
+    let scaleY = 1;
+    if (g.player.state === 'spawning') {
+      const t = clamp(g.player.spawnFrame / PLAYER_SPAWN_ANIM_FRAMES, 0, 1);
+      alpha = t;
+      scaleX = Math.max(0.001, t);
+      scaleY = 1 + 2 * (1 - t);
+    }
+    this.playerSprite(
+      spec,
+      PLAYFIELD.x + g.player.x,
+      PLAYFIELD.y + g.player.y,
+      scaleX,
+      alpha,
+      g.player.animDrawFrame ?? g.stageFrame,
+      scaleY,
+      g.player.animScript ?? ANM_SCRIPT_PLAYER_IDLE
+    );
+    const orbs = g.orbs();
+    if (orbs) {
+      this.optionOrb(spec, PLAYFIELD.x + orbs.left.x, PLAYFIELD.y + orbs.left.y, 0);
+      this.optionOrb(spec, PLAYFIELD.x + orbs.right.x, PLAYFIELD.y + orbs.right.y, 1);
+    }
+  }
+  playerHitboxOverlay() {
+    const g = this.game;
+    if (g.player.state === 'dead') return;
+    if (g.player.state === 'deathbomb') this.deathbombMarker(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
+    if ((g.mobileInputMode || g.player.focus) && (g.player.state === 'alive' || g.player.state === 'invuln')) {
+      this.hitPoint(PLAYFIELD.x + g.player.x, PLAYFIELD.y + g.player.y);
+    }
   }
   itemSprite(item) {
     const f = ITEM_FRAMES[item.type];
@@ -3608,6 +4607,7 @@ class Renderer {
   enemyBullet(x, y, b) {
     if (!b.rect) return;
     const rotation = b.rect.autoRotate ? b.angle - Math.PI / 2 : 0;
+    if (this.drawAnmFrameDirect(b.rect.imageKey || 'etama3', b.rect, x, y, { rotation })) return;
     this.drawAnmFrame(b.rect.imageKey || 'etama3', b.rect, x, y, { rotation });
   }
   enemyLaser(l) {
@@ -4243,10 +5243,14 @@ async function loadImages() {
 
 async function main() {
   const host = document.querySelector('#app');
+  const shell = document.createElement('div');
+  shell.className = 'game-shell';
   const canvas = document.createElement('canvas');
+  canvas.className = 'game-canvas';
   canvas.width = GAME_WIDTH;
   canvas.height = GAME_HEIGHT;
-  host.appendChild(canvas);
+  shell.appendChild(canvas);
+  host.appendChild(shell);
   const assets = await loadImages();
   const input = new Input();
   const game = new Game();
@@ -4254,6 +5258,17 @@ async function main() {
   game.audio = audio;
   const renderer = new Renderer(canvas, assets, game);
   const testMode = new URLSearchParams(location.search).has('test');
+  const mobileController = new MobileTouchController(shell, canvas);
+  input.setMobileController(mobileController);
+  const applyMobileMode = (enabled, { configurePwa = true } = {}) => {
+    const active = !!enabled;
+    game.mobileInputMode = active;
+    document.documentElement.classList.toggle('mobile-touch', active);
+    mobileController.setEnabled(active);
+    if (configurePwa) configureMobilePwa(active, testMode);
+    return active;
+  };
+  applyMobileMode(isMobileTouchMode());
   if (testMode) {
     const round = (value) => Math.round((value || 0) * 1000) / 1000;
     const snapshot = () => ({
@@ -4261,13 +5276,25 @@ async function main() {
       stage: game.currentStageNumber,
       frame: game.stageFrame,
       track: game.track,
-      player: { x: round(game.player.x), y: round(game.player.y), state: game.player.state },
+      player: {
+        x: round(game.player.x),
+        y: round(game.player.y),
+        state: game.player.state,
+        focus: !!game.player.focus,
+        focusCollect: !!game.player.focusCollect
+      },
       power: game.power,
       lives: game.lives,
       bombs: game.bombs,
       score: game.score,
       graze: game.graze,
       autoplay: !!game.autoplayMode,
+      mobile: {
+        mode: !!game.mobileInputMode,
+        shotFocus: !!mobileController.shotFocus,
+        hitboxVisible: !!game.mobileInputMode && (game.player.state === 'alive' || game.player.state === 'invuln'),
+        layout: mobileController.snapshot()
+      },
       playerBullets: game.playerBullets.length,
       fullPowerMode: game.fullPowerMode || 0,
       stageEntryFade: game.stageEntryFade || 0,
@@ -4302,6 +5329,11 @@ async function main() {
         score: e.score,
         itemDrop: e.ecl?.itemDrop,
         boss: !!e.ecl?.isBoss,
+        seen: !!e.ecl?.seen,
+        interactable: e.ecl?.interactable,
+        canTakeDamage: e.ecl?.canTakeDamage,
+        collisionEnabled: e.ecl?.collisionEnabled,
+        invisible: !!e.ecl?.invisible,
         anm: e.ecl?.currentAnm,
         spriteSheet: game.stageRuntime.enemyRect(e)?.imageKey || null,
         hitbox: e.ecl?.hitbox
@@ -4335,7 +5367,26 @@ async function main() {
         state: l.state
       })),
       items: game.items.map((item) => ({ type: item.type, x: round(item.x), y: round(item.y), state: item.state })),
-      effects: game.effects.map((effect) => ({ type: effect.type, x: round(effect.x), y: round(effect.y), effectId: effect.effectId, life: effect.life })),
+      playerBulletDetails: game.playerBullets.map((b) => ({
+        x: round(b.x),
+        y: round(b.y),
+        state: b.state,
+        bulletType: b.bulletType,
+        age: b.age || 0
+      })),
+      effects: game.effects.map((effect) => ({
+        type: effect.type,
+        x: round(effect.x),
+        y: round(effect.y),
+        vx: round(effect.vx),
+        vy: round(effect.vy),
+        ax: round(effect.ax),
+        ay: round(effect.ay),
+        color: effect.color,
+        effectId: effect.effectId,
+        life: effect.life
+      })),
+      perf: { ...renderer.perf },
       runtime: {
         timelineIndex: game.stageRuntime.timelineIndex,
         timelineFrame: game.stageRuntime.timelineFrame,
@@ -4364,23 +5415,68 @@ async function main() {
       renderer.draw();
       return snapshot();
     };
-    const advance = (frames, options = {}) => {
+    const makeTestInput = (options = {}) => {
+      const mobileMode = options.mobileMode ?? game.mobileInputMode;
+      const mobileShootHeld = options.mobileShootHeld ?? !!mobileMode;
       const input = {
         held: new Set(options.held || []),
-        pressed: new Set(options.pressed || [])
+        pressed: new Set(options.pressed || []),
+        mobileMode: !!mobileMode,
+        analogMove: options.analogMove || null,
+        mobileShootHeld: !!mobileShootHeld,
+        mobileShotFocus: options.mobileShotFocus ?? (!!mobileMode && !!mobileController.shotFocus)
       };
+      if (mobileShootHeld) input.held.add('shoot');
+      return input;
+    };
+    const applyTestFrameOptions = (options = {}) => {
+      if (options.x != null) game.player.x = options.x;
+      if (options.y != null) game.player.y = options.y;
+      if (options.invuln) {
+        game.player.state = 'invuln';
+        game.player.invuln = PLAYER_RESPAWN_INVULN;
+      }
+    };
+    const advance = (frames, options = {}) => {
+      const input = makeTestInput(options);
+      const frameStart = performance.now();
       for (let i = 0; i < frames; i++) {
-        if (options.x != null) game.player.x = options.x;
-        if (options.y != null) game.player.y = options.y;
-        if (options.invuln) {
-          game.player.state = 'invuln';
-          game.player.invuln = PLAYER_RESPAWN_INVULN;
-        }
+        applyTestFrameOptions(options);
+        const updateStart = performance.now();
         game.update(input);
+        const updateElapsed = performance.now() - updateStart;
+        renderer.perf.lastUpdateMs = updateElapsed;
+        renderer.perf.maxUpdateMs = Math.max(renderer.perf.maxUpdateMs, updateElapsed);
+        renderer.recordPerfSample('update', updateElapsed);
         input.pressed.clear();
       }
       renderer.draw();
+      const frameElapsed = performance.now() - frameStart;
+      renderer.perf.lastFrameMs = frameElapsed;
+      renderer.perf.maxFrameMs = Math.max(renderer.perf.maxFrameMs, frameElapsed);
+      renderer.recordPerfSample('frame', frameElapsed);
       return snapshot();
+    };
+    const measureFrames = (frames, options = {}) => {
+      const input = makeTestInput(options);
+      renderer.resetPerf();
+      for (let i = 0; i < frames; i++) {
+        applyTestFrameOptions(options);
+        const frameStart = performance.now();
+        const updateStart = frameStart;
+        game.update(input);
+        const updateElapsed = performance.now() - updateStart;
+        renderer.perf.lastUpdateMs = updateElapsed;
+        renderer.perf.maxUpdateMs = Math.max(renderer.perf.maxUpdateMs, updateElapsed);
+        renderer.recordPerfSample('update', updateElapsed);
+        input.pressed.clear();
+        renderer.draw();
+        const frameElapsed = performance.now() - frameStart;
+        renderer.perf.lastFrameMs = frameElapsed;
+        renderer.perf.maxFrameMs = Math.max(renderer.perf.maxFrameMs, frameElapsed);
+        renderer.recordPerfSample('frame', frameElapsed);
+      }
+      return { summary: renderer.perfSummary(), digest: stateDigest() };
     };
     const setStageFrame = (frame) => {
       const targetFrame = Math.max(0, Math.trunc(frame || 0));
@@ -4393,6 +5489,16 @@ async function main() {
     const setAutoplay = (enabled = true) => {
       game.autoplayMode = !!enabled;
       game.autoplay?.reset();
+      return snapshot();
+    };
+    const setMobileMode = (enabled = true) => {
+      applyMobileMode(!!enabled, { configurePwa: false });
+      renderer.draw();
+      return snapshot();
+    };
+    const setMobileShotFocus = (enabled = true) => {
+      mobileController.setShotFocus(!!enabled);
+      renderer.draw();
       return snapshot();
     };
     const spawnItem = (type, x = game.player.x, y = game.player.y, options = {}) => {
@@ -4434,6 +5540,61 @@ async function main() {
       renderer.draw();
       return snapshot();
     };
+    const spawnTestEnemy = (options = {}) => {
+      const subId = options.subId ?? 0;
+      const hp = options.hp ?? 100;
+      const e = {
+        id: game.id++,
+        kind: options.kind ?? 'fairyRed',
+        x: options.x ?? 192,
+        y: options.y ?? 128,
+        z: options.z ?? 0,
+        ix: options.x ?? 192,
+        iy: options.y ?? 128,
+        hp,
+        maxHp: hp,
+        radius: options.radius ?? 20,
+        score: options.score ?? 0,
+        frame: 0,
+        move: { type: 'test' },
+        patterns: [],
+        drops: [],
+        phaseFrame: 0,
+        bombed: false,
+        ecl: game.stageRuntime.makeEnemyState(subId, !!options.mirrored, options.itemDrop ?? -2)
+      };
+      e.ecl.ctx.off = 0;
+      e.ecl.seen = options.seen ?? true;
+      e.ecl.interactable = options.interactable ?? true;
+      e.ecl.canTakeDamage = options.canTakeDamage ?? true;
+      e.ecl.collisionEnabled = options.collisionEnabled ?? true;
+      e.ecl.invisible = !!options.invisible;
+      e.ecl.hitbox = options.hitbox ?? { x: 32, y: 32, z: 32 };
+      e.ecl.currentAnm = options.anm ?? 0;
+      game.enemies.push(e);
+      renderer.draw();
+      return snapshot();
+    };
+    const spawnEclEnemy = (options = {}) => {
+      game.stageRuntime.spawnEclEnemy(game, {
+        subId: options.subId ?? 0,
+        x: options.x ?? 192,
+        y: options.y ?? 128,
+        z: options.z ?? 0,
+        life: options.life ?? -1,
+        item: options.item ?? -2,
+        score: options.score ?? -1,
+        mirrored: !!options.mirrored
+      });
+      renderer.draw();
+      return snapshot();
+    };
+    const killNonBosses = () => {
+      game.stageRuntime.killNonBossEnemies(game);
+      game.update({ held: new Set(), pressed: new Set() });
+      renderer.draw();
+      return snapshot();
+    };
     const killBosses = () => {
       for (const enemy of game.enemies) {
         if (enemy.ecl?.isBoss && enemy.ecl.canTakeDamage !== false) enemy.hp = 0;
@@ -4452,22 +5613,111 @@ async function main() {
       }
       return { nonBlack, alpha, total: data.length / 4 };
     };
+    const pixelAt = (x, y) => {
+      const data = renderer.ctx.getImageData(Math.trunc(x), Math.trunc(y), 1, 1).data;
+      return Array.from(data);
+    };
+    const stateDigest = () => ({
+      phase: game.phase,
+      stage: game.currentStageNumber,
+      frame: game.stageFrame,
+      rng: game.rng.seed,
+      score: game.score,
+      power: game.power,
+      lives: game.lives,
+      bombs: game.bombs,
+      graze: game.graze,
+      player: {
+        x: round(game.player.x),
+        y: round(game.player.y),
+        state: game.player.state,
+        invuln: game.player.invuln,
+        focus: !!game.player.focus,
+        shotFrame: game.player.shotFrame
+      },
+      runtime: {
+        timelineIndex: game.stageRuntime.timelineIndex,
+        timelineFrame: game.stageRuntime.timelineFrame,
+        stdFrame: game.stageRuntime.std.frame
+      },
+      enemies: game.enemies.map((e) => ({
+        id: e.id,
+        subId: e.ecl?.subId,
+        x: round(e.x),
+        y: round(e.y),
+        hp: round(e.hp),
+        frame: e.frame,
+        seen: !!e.ecl?.seen,
+        interactable: e.ecl?.interactable,
+        canTakeDamage: e.ecl?.canTakeDamage,
+        anm: e.ecl?.currentAnm
+      })),
+      bullets: game.enemyBullets.map((b) => ({
+        x: round(b.x),
+        y: round(b.y),
+        vx: round(b.vx),
+        vy: round(b.vy),
+        flags: b.flags || 0,
+        age: b.age || 0,
+        sprite: b.eclSprite,
+        offset: b.eclOffset
+      })),
+      lasers: game.enemyLasers.map((l) => ({
+        x: round(l.x),
+        y: round(l.y),
+        state: l.state,
+        timer: l.timer,
+        startOffset: round(l.startOffset),
+        endOffset: round(l.endOffset)
+      })),
+      items: game.items.map((item) => ({ type: item.type, x: round(item.x), y: round(item.y), state: item.state })),
+      playerBullets: game.playerBullets.map((b) => ({ x: round(b.x), y: round(b.y), state: b.state, age: b.age || 0 })),
+      effects: game.effects.map((effect) => ({ type: effect.type, effectId: effect.effectId, x: round(effect.x), y: round(effect.y), age: effect.age, life: effect.life }))
+    });
+    const perfReset = () => {
+      renderer.resetPerf();
+      return renderer.perfSummary();
+    };
+    const perfSummary = () => renderer.perfSummary();
+    const rendererMode = () => renderer.rendererMode();
+    const forceRendererFailure = () => {
+      renderer.stageWebgl?.fail('forced test renderer fallback');
+      renderer.spriteBatch?.fail('forced test renderer fallback');
+      renderer.draw();
+      return { rendererMode: renderer.rendererMode(), perf: { ...renderer.perf } };
+    };
     window.__TH06_TEST__ = {
       setStage,
       advance,
+      measureFrames,
       setStageFrame,
       setAutoplay,
+      setMobileMode,
+      setMobileShotFocus,
       spawnItem,
       spawnEnemyBullet,
+      spawnTestEnemy,
+      spawnEclEnemy,
+      killNonBosses,
       killBosses,
       snapshot,
+      stateDigest,
+      perfReset,
+      perfSummary,
+      rendererMode,
+      forceRendererFailure,
       canvasStats,
+      pixelAt,
       constants: {
         playerHitboxHalf: PLAYER_HITBOX_HALF,
         playerGrazePadding: PLAYER_GRAZE_PADDING,
         bulletCap: TH06_LOGIC.ENEMY_BULLET_CAP,
         moveArea: MOVE_AREA,
-        playfield: PLAYFIELD
+        playfield: PLAYFIELD,
+        mobileDetected: isMobileTouchMode(),
+        rendererPreference: RENDERER_PREFERENCE,
+        stageWebglEnabled: STAGE_WEBGL_ENABLED,
+        spriteWebglEnabled: SPRITE_WEBGL_ENABLED
       }
     };
     window.__TH06_TEST_READY__ = true;
@@ -4478,23 +5728,78 @@ async function main() {
   let acc = 0;
   let fpsFrames = 0;
   let fpsStamp = last;
+  const drawSafely = () => {
+    try {
+      renderer.draw();
+      renderer.perf.lastDrawError = '';
+      return true;
+    } catch (error) {
+      renderer.perf.lastDrawError = String(error?.stack || error?.message || error);
+      const hadAcceleratedRenderer = (renderer.stageWebgl && !renderer.stageWebgl.failed) || (renderer.spriteBatch && !renderer.spriteBatch.failed);
+      if (renderer.stageWebgl && !renderer.stageWebgl.failed) renderer.stageWebgl.fail(error);
+      if (renderer.spriteBatch && !renderer.spriteBatch.failed) {
+        renderer.spriteBatch.fail(error);
+        renderer.disableSpriteBatch('sprite webgl disabled after render exception');
+      }
+      if (hadAcceleratedRenderer) {
+        try {
+          renderer.draw();
+          renderer.perf.lastDrawError = '';
+          return true;
+        } catch (retryError) {
+          renderer.perf.lastDrawError = String(retryError?.stack || retryError?.message || retryError);
+        }
+      }
+      console.error(renderer.perf.lastDrawError);
+      return false;
+    }
+  };
+  drawSafely();
   const tick = (now) => {
     acc += Math.min(250, now - last);
     last = now;
-    if (input.consumeActivity()) acc = Math.max(acc, STEP_MS);
-    while (acc + STEP_EPSILON_MS >= STEP_MS) {
+    const activity = input.consumeActivity();
+    if (activity) acc = Math.max(acc, STEP_MS);
+    const updateStart = performance.now();
+    let steps = 0;
+    if (acc + STEP_EPSILON_MS >= STEP_MS) {
       game.update(input.frame());
       audio.sync(game.track);
       acc -= STEP_MS;
+      steps++;
       if (Math.abs(acc) < STEP_EPSILON_MS) acc = 0;
     }
+    let droppedFrames = 0;
+    if (acc + STEP_EPSILON_MS >= STEP_MS) {
+      droppedFrames = Math.floor((acc + STEP_EPSILON_MS) / STEP_MS);
+      acc -= droppedFrames * STEP_MS;
+      if (acc < STEP_EPSILON_MS) acc = 0;
+    }
+    const updateElapsed = performance.now() - updateStart;
+    renderer.perf.lastUpdateMs = updateElapsed;
+    renderer.perf.maxUpdateMs = Math.max(renderer.perf.maxUpdateMs, updateElapsed);
+    renderer.recordPerfSample('update', updateElapsed);
+    renderer.perf.lastSteps = steps;
+    renderer.perf.lastDroppedFrames = droppedFrames;
+    renderer.perf.totalDroppedFrames += droppedFrames;
+    renderer.perf.accumulatorMs = acc;
+    const activityStamp = input.lastConsumedActivityStamp || 0;
+    const inputLatency = activity && activityStamp ? Math.max(0, performance.now() - activityStamp) : 0;
+    renderer.perf.lastInputLatencyMs = inputLatency;
+    renderer.perf.maxInputLatencyMs = Math.max(renderer.perf.maxInputLatencyMs, inputLatency);
+    if (activity) renderer.recordPerfSample('input', inputLatency);
     fpsFrames++;
     if (now - fpsStamp >= 500) {
       renderer.fpsText = `${(fpsFrames * 1000 / (now - fpsStamp)).toFixed(2)}FPS`;
       fpsFrames = 0;
       fpsStamp = now;
     }
-    renderer.draw();
+    drawSafely();
+    const frameElapsed = performance.now() - updateStart;
+    renderer.perf.lastFrameMs = frameElapsed;
+    renderer.perf.maxFrameMs = Math.max(renderer.perf.maxFrameMs, frameElapsed);
+    renderer.perf.lastRenderSkipped = false;
+    renderer.recordPerfSample('frame', frameElapsed);
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
