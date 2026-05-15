@@ -252,11 +252,15 @@ function canUseServiceWorker() {
 
 function unregisterMobileServiceWorker() {
   if (!canUseServiceWorker() || typeof navigator.serviceWorker.getRegistrations !== 'function') return;
+  const expectedScriptUrl = new URL(MOBILE_SW_PATH, location.href).href;
+  const expectedScopeUrl = new URL('./', expectedScriptUrl).href;
   navigator.serviceWorker.getRegistrations().then((registrations) => {
     for (const registration of registrations) {
       const worker = registration.active || registration.waiting || registration.installing;
       const script = worker?.scriptURL || '';
-      if (script.endsWith(`/${MOBILE_SW_PATH}`)) registration.unregister().catch(() => {});
+      if (script === expectedScriptUrl && registration.scope === expectedScopeUrl) {
+        registration.unregister().catch(() => {});
+      }
     }
   }).catch(() => {});
 }
