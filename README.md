@@ -53,6 +53,19 @@ npm run prepare-pages
 
 ### Changelog
 
+#### 2026-05-15
+
+- 允许移动端点击跳过对话。
+- 修复移动端触控移动问题，并修正帧节奏相关问题。
+- 改进移动端菜单触控体验，并优化 PWA 图标表现。
+- 新增移动端 PWA 支持，并加入安全的性能优化项。
+
+#### 2026-05-14
+
+- 修复 TH06 ECL 生成（spawn）相关行为，并优化 autoplay 性能。
+- 合并 PR #1（`AgentMystia/codex-th06-fidelity-autoplay`），集中引入还原度与 autoplay 相关改进。
+- 持续提升 TH06 还原度与 autoplay 体验。
+
 #### 2026-05-13
 
 - 更新 AGENTS.md，明确原作优先级、只允许已批准现代化、参考资料边界和上线校验流程。
@@ -148,6 +161,19 @@ npm run prepare-pages
 - `dist/`: build output, not committed
 
 ### Changelog
+
+#### 2026-05-15
+
+- Allowed tapping on mobile to skip dialogue.
+- Fixed mobile touch movement and frame pacing issues.
+- Improved mobile menu touch interaction and updated PWA icon behavior.
+- Added mobile PWA support with safe performance optimizations.
+
+#### 2026-05-14
+
+- Fixed TH06 ECL spawn behavior and improved autoplay performance.
+- Merged PR #1 (`AgentMystia/codex-th06-fidelity-autoplay`) with consolidated fidelity and autoplay improvements.
+- Continued improving TH06 fidelity and autoplay behavior.
 
 #### 2026-05-13
 
