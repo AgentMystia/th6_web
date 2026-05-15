@@ -41,6 +41,7 @@ const RENDERER_CAN_TRY_WEBGL = typeof document !== 'undefined'
   && (RENDERER_PREFERENCE === 'webgl' || (typeof location !== 'undefined' && (location.protocol === 'http:' || location.protocol === 'https:')));
 const STAGE_WEBGL_ENABLED = RENDERER_CAN_TRY_WEBGL;
 const SPRITE_WEBGL_ENABLED = RENDERER_CAN_TRY_WEBGL;
+const MOBILE_MENU_DOUBLE_TAP_MS = 600;
 function webglErrorName(gl, code) {
   if (!code || code === gl.NO_ERROR) return '';
   if (code === gl.INVALID_ENUM) return 'INVALID_ENUM';
@@ -364,7 +365,8 @@ class Input {
       mobileMode: !!mobileFrame,
       analogMove: mobileFrame?.analogMove || null,
       mobileShootHeld: !!mobileFrame?.shootHeld,
-      mobileShotFocus: !!mobileFrame?.shotFocus
+      mobileShotFocus: !!mobileFrame?.shotFocus,
+      mobileMenuTaps: mobileFrame?.menuTaps || []
     };
   }
   consumeActivity() {
@@ -389,9 +391,12 @@ class MobileTouchController {
     this.shotFocus = false;
     this.movePointerId = null;
     this.lastPoint = null;
+    this.startPoint = null;
+    this.maxMoveSq = 0;
     this.dx = 0;
     this.dy = 0;
     this.bombEdges = 0;
+    this.menuTaps = [];
     this.activity = false;
     this.lastActivityStamp = 0;
     this.controls = null;
@@ -460,9 +465,12 @@ class MobileTouchController {
   resetPointers() {
     this.movePointerId = null;
     this.lastPoint = null;
+    this.startPoint = null;
+    this.maxMoveSq = 0;
     this.dx = 0;
     this.dy = 0;
     this.bombEdges = 0;
+    this.menuTaps.length = 0;
   }
   setShotFocus(enabled) {
     this.shotFocus = !!enabled;
@@ -483,6 +491,8 @@ class MobileTouchController {
     event.preventDefault();
     this.movePointerId = event.pointerId;
     this.lastPoint = { x: event.clientX, y: event.clientY };
+    this.startPoint = this.lastPoint;
+    this.maxMoveSq = 0;
     this.shell.setPointerCapture?.(event.pointerId);
     this.markActivity(event);
   }
@@ -499,6 +509,11 @@ class MobileTouchController {
       this.dx += (sample.clientX - last.x) * scaleX;
       this.dy += (sample.clientY - last.y) * scaleY;
       last = { x: sample.clientX, y: sample.clientY };
+      if (this.startPoint) {
+        const mx = sample.clientX - this.startPoint.x;
+        const my = sample.clientY - this.startPoint.y;
+        this.maxMoveSq = Math.max(this.maxMoveSq, mx * mx + my * my);
+      }
     }
     this.lastPoint = last;
     this.markActivity(event);
@@ -506,13 +521,25 @@ class MobileTouchController {
   onPointerUp(event) {
     if (event.pointerId !== this.movePointerId) return;
     event.preventDefault();
+    if (this.maxMoveSq <= 14 * 14) this.queueMenuTap(event);
     this.movePointerId = null;
     this.lastPoint = null;
+    this.startPoint = null;
+    this.maxMoveSq = 0;
     this.markActivity(event);
+  }
+  queueMenuTap(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return;
+    const x = (event.clientX - rect.left) * GAME_WIDTH / rect.width;
+    const y = (event.clientY - rect.top) * GAME_HEIGHT / rect.height;
+    this.menuTaps.push({ x, y, stamp: this.lastActivityStamp || performance.now() });
   }
   frame() {
     const analogMove = { x: this.dx, y: this.dy };
     const bombPressed = this.bombEdges > 0;
+    const menuTaps = this.menuTaps.splice(0);
     this.dx = 0;
     this.dy = 0;
     this.bombEdges = 0;
@@ -520,7 +547,8 @@ class MobileTouchController {
       analogMove,
       bombPressed,
       shootHeld: true,
-      shotFocus: this.shotFocus
+      shotFocus: this.shotFocus,
+      menuTaps
     };
   }
   hasActivity() {
@@ -1305,6 +1333,7 @@ class Game {
     this.autoplayMode = false;
     this.autoplay = new AutoplayController();
     this.mobileInputMode = false;
+    this.mobileMenuTapState = null;
     this.track = null;
     this.audio = null;
     this.stages = window.TH06_EMBEDDED_DATA?.games?.th06?.stages;
@@ -1405,6 +1434,7 @@ class Game {
     this.fullPowerMode = 0;
     this.stageEntryFade = 0;
     this.stageIntro = this.stageIntroTotalFrames();
+    this.mobileMenuTapState = null;
     this.stageRuntime.reset();
   }
   createBossUi() {
@@ -1622,7 +1652,8 @@ class Game {
     if (tr.frame >= tr.duration) this.startNextStage();
   }
   updateMenu(input) {
-    const confirm = input.pressed.has('confirm') || input.pressed.has('shoot');
+    const mobileTap = this.consumeMobileMenuTaps(input.mobileMenuTaps || []);
+    const confirm = input.pressed.has('confirm') || input.pressed.has('shoot') || mobileTap.confirm;
     const back = input.pressed.has('back') || input.pressed.has('menu');
     const move = input.pressed.has('left') || input.pressed.has('right') || input.pressed.has('up') || input.pressed.has('down');
     if (this.phase === 'title') {
@@ -1687,6 +1718,50 @@ class Game {
       this.track = null;
     }
     if (move && this.phase === 'difficulty') this.audio?.sfx(SOUND.MOVE_MENU);
+  }
+  consumeMobileMenuTaps(taps) {
+    let confirm = false;
+    for (const tap of taps) {
+      const target = this.mobileMenuTarget(tap);
+      if (!target) continue;
+      const last = this.mobileMenuTapState;
+      confirm ||= !!last
+        && last.phase === this.phase
+        && last.key === target.key
+        && tap.stamp - last.stamp <= MOBILE_MENU_DOUBLE_TAP_MS;
+      this.mobileMenuTapState = { phase: this.phase, key: target.key, stamp: tap.stamp };
+      if (target.phase === 'title') {
+        if (this.titleSelected !== target.index) this.audio?.sfx(SOUND.MOVE_MENU);
+        this.titleSelected = target.index;
+      } else if (target.phase === 'character') {
+        if (this.selected !== target.index) this.audio?.sfx(SOUND.MOVE_MENU);
+        this.selected = target.index;
+      }
+    }
+    return { confirm };
+  }
+  mobileMenuTarget(tap) {
+    const x = tap?.x ?? -999;
+    const y = tap?.y ?? -999;
+    if (this.phase === 'title') {
+      for (let i = 0; i < TITLE_MENU_ITEMS.length; i++) {
+        const option = TITLE_MENU_ITEMS[i];
+        const rowY = 220 + i * 28;
+        if (!option.enabled) continue;
+        if (x >= 52 && x <= 356 && y >= rowY - 8 && y <= rowY + 24) return { phase: 'title', key: `title:${i}`, index: i };
+      }
+    } else if (this.phase === 'difficulty') {
+      if (x >= 64 && x <= 272 && y >= 220 && y <= 262) return { phase: 'difficulty', key: 'difficulty:lunatic' };
+    } else if (this.phase === 'character') {
+      for (let i = 0; i < chars.length; i++) {
+        if (!this.isCharacterEnabled(i)) continue;
+        const cx = 96 + i * 118;
+        if (x >= cx - 54 && x <= cx + 54 && y >= 196 && y <= 328) return { phase: 'character', key: `character:${i}`, index: i };
+      }
+    } else if (this.phase === 'paused' || this.phase === 'stageClear' || this.phase === 'gameOver') {
+      return { phase: this.phase, key: `${this.phase}:confirm` };
+    }
+    return null;
   }
   moveTitleSelection(dir) {
     for (let i = 0; i < TITLE_MENU_ITEMS.length; i++) {
@@ -5501,6 +5576,20 @@ async function main() {
       renderer.draw();
       return snapshot();
     };
+    const consumeInputFrame = () => {
+      const runtimeInput = input.frame();
+      game.update(runtimeInput);
+      renderer.draw();
+      return {
+        input: {
+          pressed: Array.from(runtimeInput.pressed),
+          held: Array.from(runtimeInput.held),
+          mobileMode: runtimeInput.mobileMode,
+          mobileMenuTaps: runtimeInput.mobileMenuTaps
+        },
+        snapshot: snapshot()
+      };
+    };
     const spawnItem = (type, x = game.player.x, y = game.player.y, options = {}) => {
       game.spawnItem(type, x, y, { state: options.state ?? 0 });
       renderer.draw();
@@ -5694,6 +5783,7 @@ async function main() {
       setAutoplay,
       setMobileMode,
       setMobileShotFocus,
+      consumeInputFrame,
       spawnItem,
       spawnEnemyBullet,
       spawnTestEnemy,

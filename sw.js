@@ -1,4 +1,4 @@
-const CACHE_NAME = 'touhou-web-mobile-v3';
+const CACHE_NAME = 'touhou-web-mobile-v4';
 const ASSETS = [
   './',
   'index.html',
@@ -55,6 +55,10 @@ const ASSETS = [
   'assets/th06-img/png/face09b.png',
   'assets/th06-img/png/face10a.png',
   'assets/th06-img/png/face10b.png',
+  'assets/pwa/apple-touch-icon.png',
+  'assets/pwa/icon-192.png',
+  'assets/pwa/icon-512.png',
+  'assets/pwa/icon-1024.png',
   'assets/audio/stage1.mp3',
   'assets/audio/boss1.mp3',
   'assets/audio/th06_04.mp3',
@@ -111,7 +115,10 @@ const CORE_ASSETS = [
   'assets/th06-img/png/player00.png',
   'assets/th06-img/png/player01.png',
   'assets/th06-img/png/etama3.png',
-  'assets/th06-img/png/etama4.png'
+  'assets/th06-img/png/etama4.png',
+  'assets/pwa/apple-touch-icon.png',
+  'assets/pwa/icon-192.png',
+  'assets/pwa/icon-512.png'
 ];
 
 function warmMobileCache() {
