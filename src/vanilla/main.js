@@ -431,15 +431,15 @@ class MobileTouchController {
         this.bombEdges++;
         this.markActivity(event);
       });
-      const speed = document.createElement('button');
-      speed.className = 'mobile-control mobile-shot-mode';
-      speed.type = 'button';
-      speed.addEventListener('pointerdown', (event) => {
+      const shotMode = document.createElement('button');
+      shotMode.className = 'mobile-control mobile-shot-mode';
+      shotMode.type = 'button';
+      shotMode.addEventListener('pointerdown', (event) => {
         event.preventDefault();
         this.setShotFocus(!this.shotFocus);
       });
-      this.controls.append(bomb, speed);
-      this.speedButton = speed;
+      this.controls.append(bomb, shotMode);
+      this.shotModeButton = shotMode;
     }
     if (!this.orientationHint) {
       this.orientationHint = document.createElement('div');
@@ -478,10 +478,10 @@ class MobileTouchController {
     this.updateControls();
   }
   updateControls() {
-    if (!this.speedButton) return;
-    this.speedButton.textContent = this.shotFocus ? 'LOW' : 'HIGH';
-    this.speedButton.classList.toggle('is-active', this.shotFocus);
-    this.speedButton.setAttribute('aria-pressed', String(this.shotFocus));
+    if (!this.shotModeButton) return;
+    this.shotModeButton.textContent = this.shotFocus ? 'LASER' : 'SHOT';
+    this.shotModeButton.classList.toggle('is-active', this.shotFocus);
+    this.shotModeButton.setAttribute('aria-pressed', String(this.shotFocus));
   }
   isControlTarget(target) {
     return !!target?.closest?.('.mobile-controls');
@@ -2052,12 +2052,8 @@ class Game {
     let verticalSpeed = 0;
     if (mobileMode) {
       const analog = input.analogMove || { x: 0, y: 0 };
-      let speed = spec.speed;
-      if (this.activeBombs.some((bomb) => bomb.type === 'marisaB')) speed *= 0.3;
-      const length = Math.hypot(analog.x || 0, analog.y || 0);
-      const scale = length > speed && length > 0 ? speed / length : 1;
-      horizontalSpeed = (analog.x || 0) * scale;
-      verticalSpeed = (analog.y || 0) * scale;
+      horizontalSpeed = analog.x || 0;
+      verticalSpeed = analog.y || 0;
     } else {
       const dx = Number(input.held.has('right')) - Number(input.held.has('left'));
       const dy = Number(input.held.has('down')) - Number(input.held.has('up'));
@@ -5553,6 +5549,38 @@ async function main() {
       }
       return { summary: renderer.perfSummary(), digest: stateDigest() };
     };
+    const simulateFrameLoop = (deltas, options = {}) => {
+      const input = makeTestInput(options);
+      let localAcc = 0;
+      let totalSteps = 0;
+      let totalDroppedFrames = 0;
+      for (const delta of deltas) {
+        localAcc += Math.min(250, Math.max(0, Number(delta) || 0));
+        let steps = 0;
+        if (localAcc + STEP_EPSILON_MS >= STEP_MS) {
+          game.update(input);
+          localAcc -= STEP_MS;
+          steps = 1;
+          if (Math.abs(localAcc) < STEP_EPSILON_MS) localAcc = 0;
+        }
+        let droppedFrames = 0;
+        if (localAcc + STEP_EPSILON_MS >= STEP_MS) {
+          droppedFrames = Math.floor((localAcc + STEP_EPSILON_MS) / STEP_MS);
+          localAcc -= droppedFrames * STEP_MS;
+          if (localAcc < STEP_EPSILON_MS) localAcc = 0;
+        }
+        totalSteps += steps;
+        totalDroppedFrames += droppedFrames;
+        if (steps) input.pressed.clear();
+      }
+      renderer.draw();
+      return {
+        steps: totalSteps,
+        droppedFrames: totalDroppedFrames,
+        accumulatorMs: round(localAcc),
+        snapshot: snapshot()
+      };
+    };
     const setStageFrame = (frame) => {
       const targetFrame = Math.max(0, Math.trunc(frame || 0));
       game.stageFrame = targetFrame;
@@ -5779,6 +5807,7 @@ async function main() {
       setStage,
       advance,
       measureFrames,
+      simulateFrameLoop,
       setStageFrame,
       setAutoplay,
       setMobileMode,
@@ -5849,7 +5878,6 @@ async function main() {
     acc += Math.min(250, now - last);
     last = now;
     const activity = input.consumeActivity();
-    if (activity) acc = Math.max(acc, STEP_MS);
     const updateStart = performance.now();
     let steps = 0;
     if (acc + STEP_EPSILON_MS >= STEP_MS) {
