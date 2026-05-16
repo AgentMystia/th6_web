@@ -38,8 +38,60 @@ canvas {
   place-items: center;
 }
 
+.startup-cache-status {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: #f8f8ff;
+  background: #000;
+  font: 700 16px "MS Gothic", "Yu Gothic", monospace;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.startup-cache-panel {
+  width: min(320px, 84vw);
+}
+
+.startup-cache-message {
+  margin-bottom: 12px;
+}
+
+.startup-cache-bar {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.startup-cache-fill {
+  width: 0;
+  height: 100%;
+  background: #d7f7ff;
+  transition: width 120ms linear;
+}
+
+.startup-cache-detail {
+  margin-top: 8px;
+  color: #aeb8d8;
+  font-size: 12px;
+}
+
+.startup-cache-status.is-error {
+  color: #ffb8c8;
+}
+
+.startup-cache-status.is-error .startup-cache-fill {
+  background: #ff8aa4;
+}
+
 .mobile-controls,
-.mobile-orientation-hint {
+.mobile-game-viewport,
+.mobile-status-panel {
   display: none;
 }
 
@@ -74,12 +126,23 @@ html.mobile-touch .game-shell {
   background: #000;
 }
 
-html.mobile-touch canvas {
+html.mobile-touch .mobile-game-viewport {
   grid-column: 2;
+  display: block;
+  overflow: hidden;
   width: min(100%, calc((100svh - 16px) * 4 / 3));
-  height: auto;
   max-height: calc(100svh - 16px);
   aspect-ratio: 4 / 3;
+}
+
+html.mobile-touch .mobile-game-viewport > canvas {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: 4 / 3;
+  transform: none;
+  transform-origin: top left;
 }
 
 html.mobile-touch .mobile-controls {
@@ -113,16 +176,92 @@ html.mobile-touch .mobile-controls {
 }
 
 @media (orientation: portrait) {
-  html.mobile-touch .mobile-orientation-hint {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
+  html.mobile-touch .game-shell {
+    --mobile-rail: clamp(50px, 15vw, 64px);
+    --mobile-gap: 6px;
+    grid-template-columns: var(--mobile-rail) minmax(0, 1fr);
+    grid-template-rows: 100%;
+    align-content: center;
+    gap: var(--mobile-gap);
+  }
+
+  html.mobile-touch .mobile-game-viewport {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100svh - 16px);
+    aspect-ratio: 4 / 3;
+  }
+
+  html.mobile-touch .mobile-controls {
+    align-self: center;
+    width: 100%;
+    max-width: 58px;
+    gap: 8px;
+    transform: translateY(18%);
+  }
+
+  html.mobile-touch .mobile-control {
+    min-height: 48px;
+    padding: 0 4px;
+    font-size: 12px;
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay {
+    grid-template-rows: minmax(0, auto) auto;
+    row-gap: 6px;
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    aspect-ratio: 384 / 448;
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport > canvas {
+    width: 166.666667%;
+    height: 107.142857%;
+    aspect-ratio: 4 / 3;
+    transform: translate(-5%, -3.333333%);
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay .mobile-controls {
+    grid-row: 1;
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay .mobile-status-panel {
+    grid-column: 2;
+    grid-row: 2;
     display: grid;
-    place-items: center;
-    padding: 28px;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.86);
-    font: 700 18px "MS Gothic", "Yu Gothic", monospace;
-    text-align: center;
+    width: 100%;
+    min-height: 54px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px 8px;
+    padding: 6px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.38);
+    color: #f8f8ff;
+    background: rgba(8, 7, 18, 0.92);
+    font: 700 11px "MS Gothic", "Yu Gothic", monospace;
+    pointer-events: auto;
+  }
+
+  .mobile-status-item {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .mobile-status-label {
+    color: #aeb8d8;
+  }
+
+  .mobile-status-value {
+    min-width: 0;
+    overflow: hidden;
+    color: #ffffff;
+    text-align: right;
   }
 }

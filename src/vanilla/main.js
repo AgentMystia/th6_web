@@ -189,6 +189,22 @@ const TITLE_MENU_ITEMS = [
   { id: 'quit', label: 'Quit', enabled: false }
 ];
 const MOBILE_SW_PATH = 'sw.js';
+const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v7';
+const RUNTIME_CACHE_CONCURRENCY = 4;
+const BGM_FILES = {
+  stage1: 'assets/audio/stage1.mp3',
+  boss1: 'assets/audio/boss1.mp3',
+  stage2: 'assets/audio/th06_04.mp3',
+  boss2: 'assets/audio/th06_05.mp3',
+  stage3: 'assets/audio/th06_06.mp3',
+  boss3: 'assets/audio/th06_07.mp3',
+  stage4: 'assets/audio/th06_08.mp3',
+  boss4: 'assets/audio/th06_09.mp3',
+  stage5: 'assets/audio/th06_10.mp3',
+  boss5: 'assets/audio/th06_11.mp3',
+  stage6: 'assets/audio/th06_12.mp3',
+  boss6: 'assets/audio/th06_13.mp3'
+};
 
 const keyMap = new Map([
   ['ArrowUp', ['up']],
@@ -231,6 +247,26 @@ const SFX_FILES = [
   'enep01.wav', 'nep00.wav', 'damage00.wav', 'item00.wav', 'kira00.wav',
   'kira01.wav', 'kira02.wav', 'extend.wav', 'timeout.wav', 'graze.wav', 'powerup.wav'
 ];
+const RUNTIME_CACHE_ASSETS = [
+  './',
+  'index.html',
+  'manifest.webmanifest',
+  MOBILE_SW_PATH,
+  'src/styles.css',
+  'src/vanilla/th06-data.js',
+  'src/vanilla/th06-logic.js',
+  'src/vanilla/th06-effects-data.js',
+  'src/vanilla/th06-runtime.js',
+  'src/vanilla/th06-player-data.js',
+  'src/vanilla/main.js',
+  ...Object.values(images),
+  'assets/pwa/apple-touch-icon.png',
+  'assets/pwa/icon-192.png',
+  'assets/pwa/icon-512.png',
+  'assets/pwa/icon-1024.png',
+  ...Object.values(BGM_FILES),
+  ...SFX_FILES.map((file) => `assets/sfx/${file}`)
+];
 
 const SFX_MAP = TH06_LOGIC.SFX_BUFFER_IDX_VOLUME
   .map(([file, db]) => ({ file, volume: clamp(Math.pow(10, db / 2000), 0.06, 0.82) }));
@@ -270,11 +306,99 @@ function unregisterMobileServiceWorker() {
 
 function configureMobilePwa(enabled, testMode = false) {
   if (!canUseServiceWorker()) return;
-  if (enabled && !testMode) {
-    navigator.serviceWorker.register(MOBILE_SW_PATH).catch(() => {});
-  } else {
+  if (testMode) {
     unregisterMobileServiceWorker();
+  } else {
+    navigator.serviceWorker.register(MOBILE_SW_PATH).catch(() => {});
   }
+}
+
+function shouldRequireRuntimeCache(testMode = false) {
+  return !testMode
+    && typeof location !== 'undefined'
+    && (location.protocol === 'http:' || location.protocol === 'https:');
+}
+
+function waitForWorkerState(worker, targetState) {
+  if (!worker || worker.state === targetState) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onStateChange = () => {
+      if (worker.state === targetState) {
+        worker.removeEventListener('statechange', onStateChange);
+        resolve();
+      } else if (worker.state === 'redundant') {
+        worker.removeEventListener('statechange', onStateChange);
+        reject(new Error('Service worker install became redundant'));
+      }
+    };
+    worker.addEventListener('statechange', onStateChange);
+    onStateChange();
+  });
+}
+
+function waitForServiceWorkerController() {
+  if (navigator.serviceWorker.controller) return Promise.resolve();
+  return new Promise((resolve) => {
+    navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
+  });
+}
+
+async function ensureRuntimeCache(testMode = false, onStatus = null) {
+  if (!shouldRequireRuntimeCache(testMode)) return { required: false, ready: true };
+  if (!canUseServiceWorker() || typeof caches === 'undefined') {
+    throw new Error('This browser cannot cache all runtime assets before starting.');
+  }
+
+  const report = (message, completed = 0, total = RUNTIME_CACHE_ASSETS.length) => {
+    onStatus?.({
+      message,
+      completed,
+      total,
+      percent: total > 0 ? completed / total : 0
+    });
+  };
+
+  report('正在准备离线缓存...', 0);
+  const registration = await navigator.serviceWorker.register(MOBILE_SW_PATH);
+  const worker = registration.installing || registration.waiting;
+  if (worker) await waitForWorkerState(worker, 'activated');
+  await navigator.serviceWorker.ready;
+  await waitForServiceWorkerController();
+
+  report('正在检查本地资源...', 0);
+  const cache = await caches.open(RUNTIME_CACHE_NAME);
+  const uncached = [];
+  let completed = 0;
+  for (const asset of RUNTIME_CACHE_ASSETS) {
+    if (await cache.match(asset)) {
+      completed++;
+      report('正在检查本地资源...', completed);
+    } else {
+      uncached.push(asset);
+    }
+  }
+
+  let cursor = 0;
+  const cacheNextAsset = async () => {
+    while (cursor < uncached.length) {
+      const asset = uncached[cursor++];
+      await cache.add(asset);
+      completed++;
+      report('正在下载音频与资源...', completed);
+    }
+  };
+  const workers = Array.from({ length: Math.min(RUNTIME_CACHE_CONCURRENCY, uncached.length) }, cacheNextAsset);
+  await Promise.all(workers);
+
+  const missing = [];
+  for (const asset of RUNTIME_CACHE_ASSETS) {
+    if (!await cache.match(asset)) missing.push(asset);
+  }
+  if (missing.length > 0) {
+    throw new Error(`Runtime cache incomplete: ${missing.slice(0, 3).join(', ')}`);
+  }
+  report('缓存完成', RUNTIME_CACHE_ASSETS.length);
+  return { required: true, ready: true };
 }
 
 class Rng {
@@ -407,7 +531,12 @@ class MobileTouchController {
     this.activity = false;
     this.lastActivityStamp = 0;
     this.controls = null;
-    this.orientationHint = null;
+    this.viewport = null;
+    this.statusPanel = null;
+    this.statusValues = null;
+    this.statusKey = '';
+    this.gameplayLayout = false;
+    this.portraitGameplay = false;
     this.boundPointerDown = (event) => this.onPointerDown(event);
     this.boundPointerMove = (event) => this.onPointerMove(event);
     this.boundPointerUp = (event) => this.onPointerUp(event);
@@ -425,7 +554,47 @@ class MobileTouchController {
     if (this.enabled) this.mount();
     else this.unmount();
   }
+  ensureViewport() {
+    if (!this.viewport) {
+      this.viewport = document.createElement('div');
+      this.viewport.className = 'mobile-game-viewport';
+    }
+    if (this.canvas.parentElement !== this.viewport) {
+      const parent = this.canvas.parentElement;
+      parent?.insertBefore(this.viewport, this.canvas);
+      this.viewport.appendChild(this.canvas);
+    }
+  }
+  ensureStatusPanel() {
+    if (this.statusPanel) return;
+    this.statusPanel = document.createElement('div');
+    this.statusPanel.className = 'mobile-status-panel';
+    this.statusPanel.setAttribute('aria-label', 'Mobile status');
+    this.statusValues = {};
+    const fields = [
+      ['score', 'SCORE'],
+      ['lives', 'LIFE'],
+      ['bombs', 'BOMB'],
+      ['power', 'POWER'],
+      ['graze', 'GRAZE'],
+      ['point', 'POINT']
+    ];
+    for (const [key, label] of fields) {
+      const item = document.createElement('div');
+      item.className = 'mobile-status-item';
+      const labelNode = document.createElement('span');
+      labelNode.className = 'mobile-status-label';
+      labelNode.textContent = label;
+      const valueNode = document.createElement('span');
+      valueNode.className = 'mobile-status-value';
+      valueNode.dataset.mobileStatus = key;
+      item.append(labelNode, valueNode);
+      this.statusPanel.appendChild(item);
+      this.statusValues[key] = valueNode;
+    }
+  }
   mount() {
+    this.ensureViewport();
     if (!this.controls) {
       this.controls = document.createElement('div');
       this.controls.className = 'mobile-controls';
@@ -448,13 +617,9 @@ class MobileTouchController {
       this.controls.append(bomb, shotMode);
       this.shotModeButton = shotMode;
     }
-    if (!this.orientationHint) {
-      this.orientationHint = document.createElement('div');
-      this.orientationHint.className = 'mobile-orientation-hint';
-      this.orientationHint.textContent = '请横屏游玩';
-    }
+    this.ensureStatusPanel();
     this.shell.prepend(this.controls);
-    this.shell.appendChild(this.orientationHint);
+    this.shell.appendChild(this.statusPanel);
     this.shell.addEventListener('pointerdown', this.boundPointerDown, { passive: false });
     this.shell.addEventListener('pointermove', this.boundPointerMove, { passive: false });
     this.shell.addEventListener('pointerup', this.boundPointerUp, { passive: false });
@@ -466,8 +631,16 @@ class MobileTouchController {
     this.shell.removeEventListener('pointermove', this.boundPointerMove);
     this.shell.removeEventListener('pointerup', this.boundPointerUp);
     this.shell.removeEventListener('pointercancel', this.boundPointerUp);
+    this.shell.classList.remove('mobile-gameplay');
     this.controls?.remove();
-    this.orientationHint?.remove();
+    this.statusPanel?.remove();
+    if (this.viewport?.parentElement) {
+      this.viewport.parentElement.insertBefore(this.canvas, this.viewport);
+      this.viewport.remove();
+    }
+    this.statusKey = '';
+    this.gameplayLayout = false;
+    this.portraitGameplay = false;
   }
   resetPointers() {
     this.movePointerId = null;
@@ -491,7 +664,35 @@ class MobileTouchController {
     this.shotModeButton.setAttribute('aria-pressed', String(this.shotFocus));
   }
   isControlTarget(target) {
-    return !!target?.closest?.('.mobile-controls');
+    return !!target?.closest?.('.mobile-controls, .mobile-status-panel');
+  }
+  isGameplayPhase(phase) {
+    return !['title', 'difficulty', 'character'].includes(phase);
+  }
+  syncGameState(game) {
+    if (!this.enabled) return;
+    const gameplay = this.isGameplayPhase(game?.phase);
+    const portrait = typeof matchMedia === 'function' && matchMedia('(orientation: portrait)').matches;
+    this.portraitGameplay = gameplay && portrait;
+    if (this.gameplayLayout !== gameplay) {
+      this.gameplayLayout = gameplay;
+      this.shell.classList.toggle('mobile-gameplay', gameplay);
+    }
+    if (!this.portraitGameplay || !this.statusValues) return;
+    const values = {
+      score: String(Math.max(0, game.score || 0)).padStart(9, '0'),
+      lives: String(Math.max(0, game.lives | 0)),
+      bombs: String(Math.max(0, game.bombs | 0)),
+      power: game.power >= 128 ? 'MAX' : String(Math.max(0, game.power | 0)),
+      graze: String(Math.max(0, game.graze | 0)),
+      point: String(Math.max(0, game.pointItemsCollectedInStage || 0))
+    };
+    const key = `${game.phase}|${values.score}|${values.lives}|${values.bombs}|${values.power}|${values.graze}|${values.point}`;
+    if (key === this.statusKey) return;
+    this.statusKey = key;
+    for (const [field, value] of Object.entries(values)) {
+      if (this.statusValues[field]) this.statusValues[field].textContent = value;
+    }
   }
   onPointerDown(event) {
     if (!this.enabled || this.isControlTarget(event.target) || this.movePointerId != null) return;
@@ -565,32 +766,24 @@ class MobileTouchController {
   }
   snapshot() {
     const controls = this.controls?.getBoundingClientRect();
+    const viewport = this.viewport?.getBoundingClientRect();
+    const status = this.statusPanel?.getBoundingClientRect();
     const canvas = this.canvas.getBoundingClientRect();
     return {
       enabled: this.enabled,
       shotFocus: this.shotFocus,
       controls: controls ? { x: controls.x, y: controls.y, w: controls.width, h: controls.height } : null,
-      canvas: { x: canvas.x, y: canvas.y, w: canvas.width, h: canvas.height }
+      viewport: viewport ? { x: viewport.x, y: viewport.y, w: viewport.width, h: viewport.height } : null,
+      status: status ? { x: status.x, y: status.y, w: status.width, h: status.height } : null,
+      canvas: { x: canvas.x, y: canvas.y, w: canvas.width, h: canvas.height },
+      portraitGameplay: this.portraitGameplay
     };
   }
 }
 
 class AudioBus {
   constructor() {
-    this.tracks = {
-      stage1: new Audio('assets/audio/stage1.mp3'),
-      boss1: new Audio('assets/audio/boss1.mp3'),
-      stage2: new Audio('assets/audio/th06_04.mp3'),
-      boss2: new Audio('assets/audio/th06_05.mp3'),
-      stage3: new Audio('assets/audio/th06_06.mp3'),
-      boss3: new Audio('assets/audio/th06_07.mp3'),
-      stage4: new Audio('assets/audio/th06_08.mp3'),
-      boss4: new Audio('assets/audio/th06_09.mp3'),
-      stage5: new Audio('assets/audio/th06_10.mp3'),
-      boss5: new Audio('assets/audio/th06_11.mp3'),
-      stage6: new Audio('assets/audio/th06_12.mp3'),
-      boss6: new Audio('assets/audio/th06_13.mp3')
-    };
+    this.tracks = Object.fromEntries(Object.entries(BGM_FILES).map(([key, src]) => [key, new Audio(src)]));
     for (const audio of Object.values(this.tracks)) {
       audio.loop = true;
       audio.volume = 0;
@@ -5367,13 +5560,63 @@ async function main() {
   canvas.height = GAME_HEIGHT;
   shell.appendChild(canvas);
   host.appendChild(shell);
+  const cacheRequired = shouldRequireRuntimeCache(new URLSearchParams(location.search).has('test'));
+  let startupStatus = null;
+  let startupStatusMessage = null;
+  let startupStatusFill = null;
+  let startupStatusDetail = null;
+  const setStartupStatus = (status, failed = false) => {
+    if (!cacheRequired) return;
+    if (!startupStatus) {
+      startupStatus = document.createElement('div');
+      startupStatus.className = 'startup-cache-status';
+      startupStatus.setAttribute('role', 'status');
+      startupStatus.setAttribute('aria-live', 'polite');
+      const panel = document.createElement('div');
+      panel.className = 'startup-cache-panel';
+      startupStatusMessage = document.createElement('div');
+      startupStatusMessage.className = 'startup-cache-message';
+      const bar = document.createElement('div');
+      bar.className = 'startup-cache-bar';
+      bar.setAttribute('role', 'progressbar');
+      bar.setAttribute('aria-valuemin', '0');
+      bar.setAttribute('aria-valuemax', '100');
+      startupStatusFill = document.createElement('div');
+      startupStatusFill.className = 'startup-cache-fill';
+      bar.appendChild(startupStatusFill);
+      startupStatusDetail = document.createElement('div');
+      startupStatusDetail.className = 'startup-cache-detail';
+      panel.append(startupStatusMessage, bar, startupStatusDetail);
+      startupStatus.appendChild(panel);
+      shell.appendChild(startupStatus);
+    }
+    const info = typeof status === 'string' ? { message: status } : status || {};
+    const completed = clamp(info.completed ?? 0, 0, info.total ?? 0);
+    const total = Math.max(0, info.total ?? 0);
+    const percent = total > 0 ? clamp(info.percent ?? completed / total, 0, 1) : 0;
+    startupStatusMessage.textContent = info.message || '';
+    startupStatusFill.style.width = `${Math.round(percent * 100)}%`;
+    startupStatusFill.parentElement?.setAttribute('aria-valuenow', String(Math.round(percent * 100)));
+    startupStatusDetail.textContent = total > 0
+      ? `已缓存 ${completed}/${total} (${Math.round(percent * 100)}%)`
+      : '准备中...';
+    startupStatus.classList.toggle('is-error', failed);
+  };
+  const testMode = new URLSearchParams(location.search).has('test');
+  try {
+    await ensureRuntimeCache(testMode, setStartupStatus);
+  } catch (error) {
+    console.error(error);
+    setStartupStatus('资源缓存失败，请检查网络后刷新。', true);
+    return;
+  }
+  startupStatus?.remove();
   const assets = await loadImages();
   const input = new Input();
   const game = new Game();
   const audio = new AudioBus();
   game.audio = audio;
   const renderer = new Renderer(canvas, assets, game);
-  const testMode = new URLSearchParams(location.search).has('test');
   const mobileController = new MobileTouchController(shell, canvas);
   input.setMobileController(mobileController);
   const applyMobileMode = (enabled, { configurePwa = true } = {}) => {
@@ -5384,10 +5627,15 @@ async function main() {
     if (configurePwa) configureMobilePwa(active, testMode);
     return active;
   };
+  const syncMobileUi = () => {
+    if (game.mobileInputMode) mobileController.syncGameState(game);
+  };
   applyMobileMode(isMobileTouchMode());
   if (testMode) {
     const round = (value) => Math.round((value || 0) * 1000) / 1000;
-    const snapshot = () => ({
+    const snapshot = () => {
+      syncMobileUi();
+      return ({
       phase: game.phase,
       stage: game.currentStageNumber,
       difficulty: game.difficulty,
@@ -5522,7 +5770,8 @@ async function main() {
         stageBg: game.stageAssets.stageBg,
         effect: game.stageAssets.effect
       }
-    });
+      });
+    };
     const setStage = (stage, options = {}) => {
       if (options.difficulty) game.setDifficulty(options.difficulty);
       game.loadStage(stage);
@@ -5533,6 +5782,9 @@ async function main() {
       game.power = options.power ?? 128;
       game.lives = options.lives ?? game.lives;
       game.bombs = options.bombs ?? game.bombs;
+      game.score = options.score ?? game.score;
+      game.graze = options.graze ?? game.graze;
+      game.pointItemsCollectedInStage = options.pointItems ?? game.pointItemsCollectedInStage;
       game.player.x = options.x ?? 192;
       game.player.y = options.y ?? 384;
       game.player.state = options.alive ? 'alive' : 'invuln';
@@ -5929,6 +6181,7 @@ async function main() {
     try {
       renderer.draw();
       renderer.perf.lastDrawError = '';
+      syncMobileUi();
       return true;
     } catch (error) {
       renderer.perf.lastDrawError = String(error?.stack || error?.message || error);
@@ -5942,6 +6195,7 @@ async function main() {
         try {
           renderer.draw();
           renderer.perf.lastDrawError = '';
+          syncMobileUi();
           return true;
         } catch (retryError) {
           renderer.perf.lastDrawError = String(retryError?.stack || retryError?.message || retryError);
