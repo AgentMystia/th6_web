@@ -110,28 +110,34 @@ html.mobile-touch body {
 }
 
 html.mobile-touch .game-shell {
-  --mobile-rail: clamp(88px, 14vw, 132px);
-  --mobile-gap: 8px;
+  --mobile-safe-top: max(env(safe-area-inset-top), 8px);
+  --mobile-safe-right: max(env(safe-area-inset-right), 8px);
+  --mobile-safe-bottom: max(env(safe-area-inset-bottom), 8px);
+  --mobile-safe-left: max(env(safe-area-inset-left), 8px);
+  --mobile-gap: 6px;
+  --mobile-status-h: 54px;
+  position: relative;
   display: grid;
-  grid-template-columns: var(--mobile-rail) minmax(0, 1fr);
-  grid-template-rows: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-content: center;
   align-items: center;
   justify-items: center;
-  gap: var(--mobile-gap);
   padding:
-    max(env(safe-area-inset-top), 8px)
-    max(env(safe-area-inset-right), 8px)
-    max(env(safe-area-inset-bottom), 8px)
-    max(env(safe-area-inset-left), 8px);
+    var(--mobile-safe-top)
+    var(--mobile-safe-right)
+    var(--mobile-safe-bottom)
+    var(--mobile-safe-left);
   background: #000;
 }
 
 html.mobile-touch .mobile-game-viewport {
-  grid-column: 2;
+  grid-column: 1;
+  grid-row: 1;
   display: block;
   overflow: hidden;
-  width: min(100%, calc((100svh - 16px) * 4 / 3));
-  max-height: calc(100svh - 16px);
+  width: min(100%, calc((100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom)) * 4 / 3));
+  max-height: calc(100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom));
   aspect-ratio: 4 / 3;
 }
 
@@ -146,23 +152,27 @@ html.mobile-touch .mobile-game-viewport > canvas {
 }
 
 html.mobile-touch .mobile-controls {
-  grid-column: 1;
+  position: absolute;
+  z-index: 3;
+  left: var(--mobile-safe-left);
+  top: 58%;
+  transform: translateY(-50%);
   display: grid;
-  width: 100%;
-  max-width: 120px;
+  width: clamp(48px, 13vw, 58px);
   align-content: center;
-  gap: 14px;
+  gap: 8px;
   pointer-events: auto;
 }
 
 .mobile-control {
   width: 100%;
-  min-height: 58px;
+  min-height: 46px;
+  padding: 0 4px;
   border: 1px solid rgba(255, 255, 255, 0.46);
   border-radius: 6px;
   color: #fff;
   background: rgba(18, 14, 30, 0.76);
-  font: 700 14px "MS Gothic", "Yu Gothic", monospace;
+  font: 700 12px "MS Gothic", "Yu Gothic", monospace;
   letter-spacing: 0;
   text-align: center;
   touch-action: none;
@@ -175,93 +185,58 @@ html.mobile-touch .mobile-controls {
   background: rgba(78, 34, 58, 0.88);
 }
 
-@media (orientation: portrait) {
-  html.mobile-touch .game-shell {
-    --mobile-rail: clamp(50px, 15vw, 64px);
-    --mobile-gap: 6px;
-    grid-template-columns: var(--mobile-rail) minmax(0, 1fr);
-    grid-template-rows: 100%;
-    align-content: center;
-    gap: var(--mobile-gap);
-  }
+html.mobile-touch .game-shell.mobile-gameplay {
+  grid-template-rows: minmax(0, auto) auto;
+  row-gap: var(--mobile-gap);
+}
 
-  html.mobile-touch .mobile-game-viewport {
-    width: 100%;
-    max-width: 100%;
-    max-height: calc(100svh - 16px);
-    aspect-ratio: 4 / 3;
-  }
+html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport {
+  grid-column: 1;
+  grid-row: 1;
+  width: min(100%, calc((100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap)) * 384 / 448));
+  max-height: calc(100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap));
+  aspect-ratio: 384 / 448;
+}
 
-  html.mobile-touch .mobile-controls {
-    align-self: center;
-    width: 100%;
-    max-width: 58px;
-    gap: 8px;
-    transform: translateY(18%);
-  }
+html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport > canvas {
+  width: 166.666667%;
+  height: 107.142857%;
+  aspect-ratio: 4 / 3;
+  transform: translate(-5%, -3.333333%);
+}
 
-  html.mobile-touch .mobile-control {
-    min-height: 48px;
-    padding: 0 4px;
-    font-size: 12px;
-  }
+html.mobile-touch .game-shell.mobile-gameplay .mobile-status-panel {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  width: min(100%, calc((100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap)) * 384 / 448));
+  min-height: var(--mobile-status-h);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  color: #f8f8ff;
+  background: rgba(8, 7, 18, 0.92);
+  font: 700 11px "MS Gothic", "Yu Gothic", monospace;
+  pointer-events: auto;
+}
 
-  html.mobile-touch .game-shell.mobile-gameplay {
-    grid-template-rows: minmax(0, auto) auto;
-    row-gap: 6px;
-  }
+.mobile-status-item {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  white-space: nowrap;
+}
 
-  html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport {
-    grid-column: 2;
-    grid-row: 1;
-    width: 100%;
-    aspect-ratio: 384 / 448;
-  }
+.mobile-status-label {
+  color: #aeb8d8;
+}
 
-  html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport > canvas {
-    width: 166.666667%;
-    height: 107.142857%;
-    aspect-ratio: 4 / 3;
-    transform: translate(-5%, -3.333333%);
-  }
-
-  html.mobile-touch .game-shell.mobile-gameplay .mobile-controls {
-    grid-row: 1;
-  }
-
-  html.mobile-touch .game-shell.mobile-gameplay .mobile-status-panel {
-    grid-column: 2;
-    grid-row: 2;
-    display: grid;
-    width: 100%;
-    min-height: 54px;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 2px 8px;
-    padding: 6px 8px;
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    color: #f8f8ff;
-    background: rgba(8, 7, 18, 0.92);
-    font: 700 11px "MS Gothic", "Yu Gothic", monospace;
-    pointer-events: auto;
-  }
-
-  .mobile-status-item {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 4px;
-    white-space: nowrap;
-  }
-
-  .mobile-status-label {
-    color: #aeb8d8;
-  }
-
-  .mobile-status-value {
-    min-width: 0;
-    overflow: hidden;
-    color: #ffffff;
-    text-align: right;
-  }
+.mobile-status-value {
+  min-width: 0;
+  overflow: hidden;
+  color: #ffffff;
+  text-align: right;
 }

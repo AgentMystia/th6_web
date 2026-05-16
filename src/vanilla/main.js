@@ -189,7 +189,7 @@ const TITLE_MENU_ITEMS = [
   { id: 'quit', label: 'Quit', enabled: false }
 ];
 const MOBILE_SW_PATH = 'sw.js';
-const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v7';
+const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v8';
 const RUNTIME_CACHE_CONCURRENCY = 4;
 const BGM_FILES = {
   stage1: 'assets/audio/stage1.mp3',
@@ -672,8 +672,7 @@ class MobileTouchController {
   syncGameState(game) {
     if (!this.enabled) return;
     const gameplay = this.isGameplayPhase(game?.phase);
-    const portrait = typeof matchMedia === 'function' && matchMedia('(orientation: portrait)').matches;
-    this.portraitGameplay = gameplay && portrait;
+    this.portraitGameplay = gameplay;
     if (this.gameplayLayout !== gameplay) {
       this.gameplayLayout = gameplay;
       this.shell.classList.toggle('mobile-gameplay', gameplay);

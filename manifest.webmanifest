@@ -5,7 +5,7 @@
   "start_url": "index.html?mobile=1",
   "scope": "./",
   "display": "standalone",
-  "orientation": "landscape",
+  "orientation": "portrait",
   "background_color": "#050509",
   "theme_color": "#050509",
   "icons": [
