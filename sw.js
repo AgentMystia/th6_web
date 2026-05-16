@@ -1,9 +1,10 @@
-const CACHE_NAME = 'touhou-web-mobile-v4';
-const CACHE_PREFIX = 'touhou-web-mobile-';
+const CACHE_NAME = 'touhou-web-runtime-v7';
+const CACHE_PREFIXES = ['touhou-web-mobile-', 'touhou-web-runtime-'];
 const ASSETS = [
   './',
   'index.html',
   'manifest.webmanifest',
+  'sw.js',
   'src/styles.css',
   'src/vanilla/th06-data.js',
   'src/vanilla/th06-logic.js',
@@ -99,58 +100,38 @@ const ASSETS = [
   'assets/sfx/graze.wav',
   'assets/sfx/powerup.wav'
 ];
-const CORE_ASSETS = [
+const BOOT_ASSETS = [
   './',
   'index.html',
   'manifest.webmanifest',
+  'sw.js',
   'src/styles.css',
-  'src/vanilla/th06-data.js',
-  'src/vanilla/th06-logic.js',
-  'src/vanilla/th06-effects-data.js',
-  'src/vanilla/th06-runtime.js',
-  'src/vanilla/th06-player-data.js',
-  'src/vanilla/main.js',
-  'assets/th06-img/jpg/title00.jpg',
-  'assets/th06-img/jpg/select00.jpg',
-  'assets/th06-img/png/front.png',
-  'assets/th06-img/png/player00.png',
-  'assets/th06-img/png/player01.png',
-  'assets/th06-img/png/etama3.png',
-  'assets/th06-img/png/etama4.png',
-  'assets/pwa/apple-touch-icon.png',
-  'assets/pwa/icon-192.png',
-  'assets/pwa/icon-512.png'
+  'src/vanilla/main.js'
 ];
 
-function warmMobileCache() {
-  caches.open(CACHE_NAME).then((cache) => {
-    const core = new Set(CORE_ASSETS);
-    const remaining = ASSETS.filter((asset) => !core.has(asset));
-    return cache.addAll(remaining);
-  }).catch(() => {});
-}
-
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(BOOT_ASSETS)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(Promise.all([
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME && key.startsWith(CACHE_PREFIX)).map((key) => caches.delete(key)))),
+    caches.keys().then((keys) => Promise.all(keys
+      .filter((key) => key !== CACHE_NAME && CACHE_PREFIXES.some((prefix) => key.startsWith(prefix)))
+      .map((key) => caches.delete(key)))),
     self.clients.claim()
-  ]).then(() => warmMobileCache()));
+  ]));
 });
 
-function mobileRuntimeUrl(url) {
+function runtimeUrl(url) {
   const parsed = new URL(url);
-  return parsed.searchParams.get('mobile') === '1' && !parsed.searchParams.has('test');
+  return !parsed.searchParams.has('test');
 }
 
 async function handlesRequest(event) {
-  if (event.request.mode === 'navigate') return mobileRuntimeUrl(event.request.url);
+  if (event.request.mode === 'navigate') return runtimeUrl(event.request.url);
   if (!event.clientId) return false;
   const client = await self.clients.get(event.clientId);
-  return client ? mobileRuntimeUrl(client.url) : false;
+  return client ? runtimeUrl(client.url) : false;
 }
 
 self.addEventListener('fetch', (event) => {
