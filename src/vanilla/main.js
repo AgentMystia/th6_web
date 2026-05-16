@@ -177,6 +177,9 @@ const chars = [
   { id: 'marisaA', family: 'marisa', label: 'Marisa A', sheet: 'player01', speed: 5, focus: 2.5, color: '#ffdf5d' },
   { id: 'marisaB', family: 'marisa', label: 'Marisa B', sheet: 'player01', speed: 5, focus: 2.5, color: '#c77dff' }
 ];
+const MAIN_DIFFICULTIES = TH06_LOGIC.MAIN_DIFFICULTIES;
+const DEFAULT_DIFFICULTY = TH06_LOGIC.DEFAULT_DIFFICULTY;
+const DEFAULT_DIFFICULTY_INDEX = Math.max(0, MAIN_DIFFICULTIES.findIndex((difficulty) => difficulty.id === DEFAULT_DIFFICULTY));
 const DEMO_ENABLED_CHAR_IDS = new Set(['reimuA', 'reimuB', 'marisaA', 'marisaB']);
 const TITLE_MENU_ITEMS = [
   { id: 'start', label: 'Start', enabled: true },
@@ -1332,6 +1335,8 @@ class Game {
     this.rng = new Rng();
     this.phase = 'title';
     this.selected = 0;
+    this.difficultySelected = DEFAULT_DIFFICULTY_INDEX;
+    this.difficulty = DEFAULT_DIFFICULTY;
     this.titleSelected = 0;
     this.pendingAutoplay = false;
     this.autoplayMode = false;
@@ -1371,8 +1376,8 @@ class Game {
     this.powerItemCountForScore = 0;
     this.spellcardsCaptured = 0;
     this.extraLifeIndex = 0;
-    this.difficulty = 'lunatic';
-    this.rank = 16;
+    this.difficulty = this.selectedDifficulty().id;
+    this.rank = TH06_LOGIC.DIFFICULTY_INFO[this.difficulty].rank;
     this.subRank = 0;
     this.loadStage(1);
     this.resetStageState();
@@ -1471,7 +1476,9 @@ class Game {
     this.requestBgm(id, { fadeMs: 400, label: this.stageMeta.musicLabels[0] });
   }
   hasNextStage() {
-    return !!this.stages?.[this.currentStageNumber + 1];
+    const maxStage = this.difficulty === 'easy' ? 5 : 6;
+    const nextStage = this.currentStageNumber + 1;
+    return nextStage <= maxStage && !!this.stages?.[nextStage];
   }
   startNextStage() {
     this.loadStage(this.currentStageNumber + 1);
@@ -1659,7 +1666,6 @@ class Game {
     const mobileTap = this.consumeMobileMenuTaps(input.mobileMenuTaps || []);
     const confirm = input.pressed.has('confirm') || input.pressed.has('shoot') || mobileTap.confirm;
     const back = input.pressed.has('back') || input.pressed.has('menu');
-    const move = input.pressed.has('left') || input.pressed.has('right') || input.pressed.has('up') || input.pressed.has('down');
     if (this.phase === 'title') {
       if (input.pressed.has('up')) {
         this.moveTitleSelection(-1);
@@ -1679,6 +1685,14 @@ class Game {
       }
     }
     else if (this.phase === 'difficulty') {
+      if (input.pressed.has('left') || input.pressed.has('up')) {
+        this.moveDifficultySelection(-1);
+        this.audio?.sfx(SOUND.MOVE_MENU);
+      }
+      if (input.pressed.has('right') || input.pressed.has('down')) {
+        this.moveDifficultySelection(1);
+        this.audio?.sfx(SOUND.MOVE_MENU);
+      }
       if (back) {
         this.audio?.sfx(SOUND.BACK);
         this.phase = 'title';
@@ -1721,7 +1735,6 @@ class Game {
       this.phase = 'title';
       this.track = null;
     }
-    if (move && this.phase === 'difficulty') this.audio?.sfx(SOUND.MOVE_MENU);
   }
   consumeMobileMenuTaps(taps) {
     let confirm = false;
@@ -1737,6 +1750,10 @@ class Game {
       if (target.phase === 'title') {
         if (this.titleSelected !== target.index) this.audio?.sfx(SOUND.MOVE_MENU);
         this.titleSelected = target.index;
+      } else if (target.phase === 'difficulty') {
+        if (this.difficultySelected !== target.index) this.audio?.sfx(SOUND.MOVE_MENU);
+        this.difficultySelected = target.index;
+        this.difficulty = this.selectedDifficulty().id;
       } else if (target.phase === 'character') {
         if (this.selected !== target.index) this.audio?.sfx(SOUND.MOVE_MENU);
         this.selected = target.index;
@@ -1755,7 +1772,12 @@ class Game {
         if (x >= 52 && x <= 356 && y >= rowY - 8 && y <= rowY + 24) return { phase: 'title', key: `title:${i}`, index: i };
       }
     } else if (this.phase === 'difficulty') {
-      if (x >= 64 && x <= 272 && y >= 220 && y <= 262) return { phase: 'difficulty', key: 'difficulty:lunatic' };
+      for (let i = 0; i < MAIN_DIFFICULTIES.length; i++) {
+        const rowY = 220 + i * 28;
+        if (x >= 64 && x <= 272 && y >= rowY - 8 && y <= rowY + 24) {
+          return { phase: 'difficulty', key: `difficulty:${MAIN_DIFFICULTIES[i].id}`, index: i };
+        }
+      }
     } else if (this.phase === 'character') {
       for (let i = 0; i < chars.length; i++) {
         if (!this.isCharacterEnabled(i)) continue;
@@ -1773,6 +1795,22 @@ class Game {
       if (TITLE_MENU_ITEMS[this.titleSelected]?.enabled) return;
     }
     this.titleSelected = 0;
+  }
+  selectedDifficulty() {
+    return MAIN_DIFFICULTIES[this.difficultySelected] || MAIN_DIFFICULTIES[DEFAULT_DIFFICULTY_INDEX];
+  }
+  setDifficulty(id) {
+    const index = MAIN_DIFFICULTIES.findIndex((difficulty) => difficulty.id === id);
+    if (index < 0) throw new Error(`Unknown TH06 main difficulty: ${id}`);
+    this.difficultySelected = index;
+    this.difficulty = MAIN_DIFFICULTIES[index].id;
+    const info = TH06_LOGIC.DIFFICULTY_INFO[this.difficulty];
+    this.rank = info.rank;
+    this.subRank = 0;
+  }
+  moveDifficultySelection(dir) {
+    this.difficultySelected = (this.difficultySelected + dir + MAIN_DIFFICULTIES.length) % MAIN_DIFFICULTIES.length;
+    this.difficulty = this.selectedDifficulty().id;
   }
   spec() {
     return chars[this.selected];
@@ -4148,7 +4186,9 @@ class Renderer {
       });
     } else if (g.phase === 'difficulty') {
       this.fillText('Difficulty Select', 72, 186, 18);
-      this.item('Lunatic', 84, 232, true);
+      MAIN_DIFFICULTIES.forEach((difficulty, i) => {
+        this.item(difficulty.label, 84, 220 + i * 28, i === g.difficultySelected);
+      });
     } else {
       this.fillText('Player Select', 72, 168, 18);
       chars.forEach((c, i) => {
@@ -5350,6 +5390,8 @@ async function main() {
     const snapshot = () => ({
       phase: game.phase,
       stage: game.currentStageNumber,
+      difficulty: game.difficulty,
+      hasNextStage: game.hasNextStage(),
       frame: game.stageFrame,
       track: game.track,
       player: {
@@ -5482,6 +5524,7 @@ async function main() {
       }
     });
     const setStage = (stage, options = {}) => {
+      if (options.difficulty) game.setDifficulty(options.difficulty);
       game.loadStage(stage);
       game.resetStageState();
       game.phase = 'playing';
@@ -5605,6 +5648,11 @@ async function main() {
     const setAutoplay = (enabled = true) => {
       game.autoplayMode = !!enabled;
       game.autoplay?.reset();
+      return snapshot();
+    };
+    const setDifficulty = (difficulty) => {
+      game.setDifficulty(difficulty);
+      renderer.draw();
       return snapshot();
     };
     const setMobileMode = (enabled = true) => {
@@ -5760,6 +5808,8 @@ async function main() {
     const stateDigest = () => ({
       phase: game.phase,
       stage: game.currentStageNumber,
+      difficulty: game.difficulty,
+      hasNextStage: game.hasNextStage(),
       frame: game.stageFrame,
       rng: game.rng.seed,
       score: game.score,
@@ -5828,6 +5878,7 @@ async function main() {
     };
     window.__TH06_TEST__ = {
       setStage,
+      setDifficulty,
       advance,
       measureFrames,
       simulateFrameLoop,
@@ -5855,6 +5906,9 @@ async function main() {
         playerHitboxHalf: PLAYER_HITBOX_HALF,
         playerGrazePadding: PLAYER_GRAZE_PADDING,
         bulletCap: TH06_LOGIC.ENEMY_BULLET_CAP,
+        defaultDifficulty: DEFAULT_DIFFICULTY,
+        difficultyOrder: TH06_LOGIC.DIFFICULTY_ORDER,
+        mainDifficulties: MAIN_DIFFICULTIES,
         moveArea: MOVE_AREA,
         playfield: PLAYFIELD,
         mobileDetected: isMobileTouchMode(),

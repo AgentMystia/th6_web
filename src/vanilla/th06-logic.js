@@ -235,6 +235,15 @@
     ...STAGE6_META.spells
   ];
 
+  const DEFAULT_DIFFICULTY = 'normal';
+  const DIFFICULTY_ORDER = ['easy', 'normal', 'hard', 'lunatic'];
+  const MAIN_DIFFICULTIES = [
+    { id: 'easy', label: 'Easy', eclIndex: 0 },
+    { id: 'normal', label: 'Normal', eclIndex: 1 },
+    { id: 'hard', label: 'Hard', eclIndex: 2 },
+    { id: 'lunatic', label: 'Lunatic', eclIndex: 3 }
+  ];
+  const DIFFICULTY_ECL_INDEX = Object.freeze({ easy: 0, normal: 1, hard: 2, lunatic: 3, extra: 4 });
   const DIFFICULTY_INFO = {
     easy: { rank: 16, minRank: 12, maxRank: 20 },
     normal: { rank: 16, minRank: 10, maxRank: 32 },
@@ -661,13 +670,19 @@
     return Math.trunc(n / d);
   }
 
-  function rankInfo(difficulty = 'lunatic') {
+  function difficultyIndex(difficulty = DEFAULT_DIFFICULTY) {
+    const idx = DIFFICULTY_ECL_INDEX[difficulty];
+    if (idx == null) throw new Error(`Unknown TH06 difficulty index: ${difficulty}`);
+    return idx;
+  }
+
+  function rankInfo(difficulty = DEFAULT_DIFFICULTY) {
     const info = DIFFICULTY_INFO[difficulty];
     if (!info) throw new Error(`Unknown TH06 difficulty: ${difficulty}`);
     return info;
   }
 
-  function adjustRankState(rank, subRank, amount, difficulty = 'lunatic') {
+  function adjustRankState(rank, subRank, amount, difficulty = DEFAULT_DIFFICULTY) {
     const info = rankInfo(difficulty);
     let nextRank = rank | 0;
     let nextSubRank = (subRank | 0) + (amount | 0);
@@ -716,7 +731,7 @@
     };
   }
 
-  function pointItemScore(y, difficulty = 'lunatic') {
+  function pointItemScore(y, difficulty = DEFAULT_DIFFICULTY) {
     const table = POINT_SCORE_TABLE[difficulty];
     if (!table) throw new Error(`Unknown TH06 point item score difficulty: ${difficulty}`);
     const yy = Math.trunc(y);
@@ -1069,6 +1084,9 @@
 
   globalThis.TH06Logic = {
     DIALOGUE_ZH_CN,
+    DEFAULT_DIFFICULTY,
+    DIFFICULTY_ORDER,
+    MAIN_DIFFICULTIES,
     DIFFICULTY_INFO,
     POWER_UP_THRESHOLDS,
     EXTRA_LIFE_SCORES,
@@ -1088,6 +1106,7 @@
     STAGE6_META,
     STAGE_META,
     bulletGrazeSize,
+    difficultyIndex,
     adjustRankState,
     collectPowerItem,
     effectColorById,

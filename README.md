@@ -53,6 +53,14 @@ npm run prepare-pages
 
 ### Changelog
 
+#### 2026-05-17
+
+- 实装主线 Easy / Normal / Hard / Lunatic 四难度选择，默认光标按原作停在 Normal。
+- 将 ECL 难度分支从固定 Lunatic 改为按当前难度解释，保留 Lunatic 原有行为。
+- 还原 Stage 5 符卡难度差分：Easy / Normal 与 Hard / Lunatic 使用对应原作 spell id。
+- 保留 Easy 第五面结束后不进入第六面的原作流程。
+- 补充本地四难度 ECL 审计和浏览器菜单 / 流程回归验证。
+
 #### 2026-05-15
 
 - 允许移动端点击跳过对话。
@@ -161,6 +169,14 @@ npm run prepare-pages
 - `dist/`: build output, not committed
 
 ### Changelog
+
+#### 2026-05-17
+
+- Implemented the main Easy / Normal / Hard / Lunatic difficulty selection, with Normal selected by default like the original.
+- Changed ECL difficulty branching from fixed Lunatic to the active difficulty while preserving existing Lunatic behavior.
+- Restored Stage 5 spell difficulty variants so Easy / Normal and Hard / Lunatic use the corresponding original spell IDs.
+- Preserved the original Easy-route rule that stops after Stage 5 instead of entering Stage 6.
+- Added local four-difficulty ECL audit coverage and browser regression checks for menu / route flow.
 
 #### 2026-05-15
 

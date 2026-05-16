@@ -5,7 +5,6 @@
   const TAU = Math.PI * 2;
   const DEG = Math.PI / 180;
   const ANGLE_EPSILON = 1e-6;
-  const ACTIVE_ECL_DIFFICULTY = 3; // Lunatic first: reproduce the densest original script path.
   const ENEMY_BULLET_CAP = TH06_LOGIC.ENEMY_BULLET_CAP ?? 640;
   const ITEM_TABLE = ['power', 'point', 'bigPower', 'bomb', 'fullPower', 'life', 'point'];
   const RANDOM_ITEMS = [
@@ -67,6 +66,10 @@
     if (typeof rng.u32InRange === 'function') return rng.u32InRange(span);
     if (typeof rng.u32 === 'function') return rng.u32() % span;
     return Math.trunc(rng.range(span));
+  }
+
+  function eclDifficultyIndex(game) {
+    return TH06_LOGIC.difficultyIndex(game?.difficulty ?? TH06_LOGIC.DEFAULT_DIFFICULTY);
   }
 
   function bytesFromBase64(b64) {
@@ -679,6 +682,7 @@
 
   class Th06StageRuntime {
     constructor(stageData) {
+      this.stageNumber = stageData.stageNumber;
       this.ecl = new Th06Ecl(stageData.ecl);
       this.std = new Th06Std(stageData.std, stageData.stageAnm);
       this.enemyAnm = new Th06Anm(stageData.enemyAnm);
@@ -727,7 +731,10 @@
     spawnTimeline(game, evt) {
       if (evt.op === 8) {
         const familyOffset = game.spec?.().family === 'marisa' ? 10 : 0;
-        game.startDialogue?.(evt.arg0 + familyOffset, this.msg?.message(evt.arg0 + familyOffset));
+        const dialogueIndex = this.stageNumber === 5 && eclDifficultyIndex(game) === 0 && evt.arg0 === 1
+          ? familyOffset + 3
+          : evt.arg0 + familyOffset;
+        game.startDialogue?.(dialogueIndex, this.msg?.message(dialogueIndex));
         return null;
       }
       if (evt.op === 9) {
@@ -894,6 +901,7 @@
     updateEnemy(game, e) {
       const prevX = e.x;
       const prevY = e.y;
+      e.ecl.difficultyIndex = eclDifficultyIndex(game);
       this.applyMovement(e);
       e.ecl.frameVx = e.x - prevX;
       e.ecl.frameVy = e.y - prevY;
@@ -991,6 +999,8 @@
     runEcl(game, e) {
       const s = e.ecl;
       const v = this.ecl.view;
+      const difficulty = eclDifficultyIndex(game);
+      s.difficultyIndex = difficulty;
       for (let guard = 0; guard < 512; guard++) {
         if (s.runInterrupt >= 0) {
           const sub = s.interrupts[s.runInterrupt];
@@ -1009,7 +1019,7 @@
         const skip = v.u8(ctx.off + 9);
         if (time < 0 || op < 0) return;
         if (ctx.time !== time) break;
-        if (skip & (1 << ACTIVE_ECL_DIFFICULTY)) {
+        if (skip & (1 << difficulty)) {
           const previousExecutingEnemy = this.executingEnemy || null;
           this.executingEnemy = e;
           const action = this.execute(game, e, ctx, op);
@@ -1638,6 +1648,7 @@
     }
     runStage5Func5(game, e) {
       const c = e.ecl.ctx;
+      const easyOrNormal = eclDifficultyIndex(game) <= 1;
       if (c.var2 % 9 === 0) {
         const pattern = Math.trunc(c.var2 / 9);
         const toPlayer = { x: game.player.x - e.x, y: game.player.y - e.y };
@@ -1654,7 +1665,7 @@
         const props = {
           sprite: 8,
           offset: 3,
-          count1: ACTIVE_ECL_DIFFICULTY <= 1 ? 1 : 3,
+          count1: easyOrNormal ? 1 : 3,
           count2: 1,
           speed1: 2,
           speed2: 0.3,
@@ -1667,7 +1678,7 @@
         };
         for (let i = 0; i < 9; i++, bulletAngle += Math.PI / 18) {
           matrixIn = this.rotateStage5(matrixIn, -Math.PI / 18);
-          const angle1 = (pattern & 1) && ACTIVE_ECL_DIFFICULTY <= 1 ? bulletAngle : props.angle1;
+          const angle1 = (pattern & 1) && easyOrNormal ? bulletAngle : props.angle1;
           this.spawnBullets(game, e, { ...props, angle1 }, {
             x: e.x + baseOffset.x + matrixIn.x,
             y: e.y + baseOffset.y + matrixIn.y
@@ -1833,14 +1844,15 @@
           game.spawnEffectParticles?.(12, e.x, e.y, 1, 0xffffffff);
           game.timeStopped = !!(param & 0xff);
         } else {
-          let changed = ACTIVE_ECL_DIFFICULTY <= 1 ? 14 : 52;
+          const easyOrNormal = eclDifficultyIndex(game) <= 1;
+          let changed = easyOrNormal ? 14 : 52;
           for (const bullet of game.enemyBullets || []) {
             if (changed <= 0) break;
             if (!this.bulletIsLarge(bullet) || bullet.eclOffset === 5 || rngU16InRange(game.rng, 4) !== 0) continue;
             this.setBulletOffset(bullet, 5);
             const dist = Math.hypot(bullet.x - game.player.x, bullet.y - game.player.y);
             const angle = dist > 128
-              ? (ACTIVE_ECL_DIFFICULTY <= 1 ? game.rng.range(Math.PI * 0.75) + Math.PI / 4 : game.rng.range(TAU) - Math.PI)
+              ? (easyOrNormal ? game.rng.range(Math.PI * 0.75) + Math.PI / 4 : game.rng.range(TAU) - Math.PI)
               : Math.atan2(bullet.y - game.player.y, bullet.x - game.player.x) + Math.PI / 2 + game.rng.range(TAU) - Math.PI;
             this.setBulletVelocity(bullet, angle, bullet.speed || 1);
             changed--;
@@ -1854,6 +1866,7 @@
       } else if (index === 10) {
         this.runStage6BombShield(game, e, repeated);
       } else if (index === 7) {
+        const easyOrNormal = eclDifficultyIndex(game) <= 1;
         const randomAngle = game.rng.range(TAU) - Math.PI;
         for (let ring = 0; ring < 2; ring++) {
           let laserAngle = (ring === 0 ? -Math.PI : -Math.PI * 7 / 8) + randomAngle;
@@ -1869,10 +1882,10 @@
               const pos = bases[i];
               if ((param | 0) === 0) {
                 this.spawnLaserPattern(game, e, pos, laserAngle, {
-                  color: ACTIVE_ECL_DIFFICULTY <= 1 ? 2 : 8,
-                  endOffset: ACTIVE_ECL_DIFFICULTY <= 1 ? length : 440,
-                  startLength: ACTIVE_ECL_DIFFICULTY <= 1 ? length : 440,
-                  width: ACTIVE_ECL_DIFFICULTY <= 1 ? 28 : 20,
+                  color: easyOrNormal ? 2 : 8,
+                  endOffset: easyOrNormal ? length : 440,
+                  startLength: easyOrNormal ? length : 440,
+                  width: easyOrNormal ? 28 : 20,
                   startTime: pass * 16 + 60,
                   duration: 90 - pass * 16
                 });
@@ -2215,7 +2228,7 @@
       if (id === -10010) return c.var5;
       if (id === -10011) return c.var6;
       if (id === -10012) return c.var7;
-      if (id === -10013) return ACTIVE_ECL_DIFFICULTY;
+      if (id === -10013) return e.ecl.difficultyIndex ?? TH06_LOGIC.difficultyIndex();
       if (id === -10014) return TH06_GLOBAL.__touhouGameRank ?? 16;
       if (id === -10015) return e.x;
       if (id === -10016) return e.y;
