@@ -51,6 +51,17 @@ npm run prepare-pages
 - `tests/`、`scripts/`：本地测试和审计工具，不作为 Pages 运行依赖
 - `dist/`：发布产物，不提交
 
+### 本地参考资料
+
+`reference/` 不提交到远程仓库。需要继续做高还原度开发或运行完整 source audit 的开发者，应在本地准备这些资料：
+
+- `reference/th06-original/`：从合法持有的 TH06 原版资源中解包出的文件。当前生成脚本会读取 `ecldata*.ecl`、`stage*.std`、`*.anm`、`msg*.dat` 等资源，重新生成 `src/vanilla/th06-data.js` 和 `src/vanilla/th06-effects-data.js`。
+- `reference/th06-master/`：[GensokyoClub/th06](https://github.com/GensokyoClub/th06) 逆向工程项目的本地 checkout，用于源码级常量、状态机、碰撞、计分、Bomb、资源表和帧时序审计。
+- `reference/ECL/`：可读的 ECL `.decl` 反编译脚本，用于核对关卡、Boss phase、符卡、敌人 subroutine 与 timeline。
+- `reference/DSTD/`：可读的 STD `.dstd` 反编译脚本，用于核对舞台背景对象和相机/透视行为。
+
+没有 `reference/` 时，浏览器运行不受影响；部分 source audit 会跳过或降级为只检查已内嵌运行时数据。准备好本地参考资料后，可运行 `npm run generate-data` 重建内嵌原作数据，再运行 `npm test` 和 `node scripts/audit-th06-stages.mjs` 做一致性检查。
+
 ### Changelog
 
 #### 2026-05-17
@@ -167,6 +178,17 @@ npm run prepare-pages
 - `reference/`: local reference corpus, not pushed to remote
 - `tests/`, `scripts/`: local tests and audit tools, not required by Pages runtime
 - `dist/`: build output, not committed
+
+### Local Reference Corpus
+
+`reference/` is not committed to the remote repository. Developers who want to continue high-fidelity work or run the full source audit should prepare these files locally:
+
+- `reference/th06-original/`: files unpacked from a legally owned TH06 release. The current generators read resources such as `ecldata*.ecl`, `stage*.std`, `*.anm`, and `msg*.dat`, then rebuild `src/vanilla/th06-data.js` and `src/vanilla/th06-effects-data.js`.
+- `reference/th06-master/`: a local checkout of the [GensokyoClub/th06](https://github.com/GensokyoClub/th06) reverse-engineering project, used for source-level audits of constants, state machines, collision, scoring, bombs, resource tables, and frame timing.
+- `reference/ECL/`: readable decompiled ECL `.decl` scripts for checking stages, boss phases, spellcards, enemy subroutines, and timelines.
+- `reference/DSTD/`: readable decompiled STD `.dstd` scripts for checking stage background objects and camera/projection behavior.
+
+The browser runtime does not need `reference/`. Without it, some source audits skip or fall back to checks against the embedded runtime data only. After preparing local references, run `npm run generate-data` to rebuild embedded original data, then run `npm test` and `node scripts/audit-th06-stages.mjs` for consistency checks.
 
 ### Changelog
 
