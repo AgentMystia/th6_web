@@ -336,10 +336,23 @@ function waitForWorkerState(worker, targetState) {
   });
 }
 
-function waitForServiceWorkerController() {
-  if (navigator.serviceWorker.controller) return Promise.resolve();
+function waitForServiceWorkerController(timeoutMs = 1500) {
+  if (navigator.serviceWorker.controller) return Promise.resolve(true);
   return new Promise((resolve) => {
-    navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
+    let settled = false;
+    const onControllerChange = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      resolve(false);
+    }, Math.max(0, timeoutMs | 0));
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange, { once: true });
   });
 }
 
