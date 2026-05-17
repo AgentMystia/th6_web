@@ -1,4 +1,4 @@
-const CACHE_NAME = 'touhou-web-runtime-v8';
+const CACHE_NAME = 'touhou-web-runtime-v9';
 const CACHE_PREFIXES = ['touhou-web-mobile-', 'touhou-web-runtime-'];
 const ASSETS = [
   './',

@@ -189,7 +189,7 @@ const TITLE_MENU_ITEMS = [
   { id: 'quit', label: 'Quit', enabled: false }
 ];
 const MOBILE_SW_PATH = 'sw.js';
-const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v8';
+const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v9';
 const RUNTIME_CACHE_CONCURRENCY = 4;
 const BGM_FILES = {
   stage1: 'assets/audio/stage1.mp3',
@@ -532,6 +532,7 @@ class MobileTouchController {
     this.lastActivityStamp = 0;
     this.controls = null;
     this.viewport = null;
+    this.topStatusPanel = null;
     this.statusPanel = null;
     this.statusValues = null;
     this.statusKey = '';
@@ -566,32 +567,59 @@ class MobileTouchController {
     }
   }
   ensureStatusPanel() {
+    if (this.topStatusPanel && this.statusPanel) return;
+    if (!this.topStatusPanel) {
+      this.topStatusPanel = document.createElement('div');
+      this.topStatusPanel.className = 'mobile-top-status-panel';
+      this.topStatusPanel.setAttribute('aria-label', 'Mobile score and lives');
+      const scoreLine = document.createElement('div');
+      scoreLine.className = 'mobile-top-score';
+      const scoreLabel = document.createElement('span');
+      scoreLabel.className = 'mobile-top-label';
+      scoreLabel.textContent = 'SCORE';
+      const scoreValue = document.createElement('span');
+      scoreValue.className = 'mobile-top-score-value';
+      scoreValue.dataset.mobileStatus = 'score';
+      const lifeStars = document.createElement('div');
+      lifeStars.className = 'mobile-life-stars';
+      lifeStars.dataset.mobileStars = 'lives';
+      lifeStars.setAttribute('aria-label', 'Lives');
+      scoreLine.append(scoreLabel, scoreValue);
+      this.topStatusPanel.append(scoreLine, lifeStars);
+      this.statusValues = { ...(this.statusValues || {}), score: scoreValue, lifeStars };
+    }
     if (this.statusPanel) return;
     this.statusPanel = document.createElement('div');
     this.statusPanel.className = 'mobile-status-panel';
-    this.statusPanel.setAttribute('aria-label', 'Mobile status');
-    this.statusValues = {};
-    const fields = [
-      ['score', 'SCORE'],
-      ['lives', 'LIFE'],
-      ['bombs', 'BOMB'],
-      ['power', 'POWER'],
-      ['graze', 'GRAZE'],
-      ['point', 'POINT']
-    ];
-    for (const [key, label] of fields) {
-      const item = document.createElement('div');
-      item.className = 'mobile-status-item';
-      const labelNode = document.createElement('span');
-      labelNode.className = 'mobile-status-label';
-      labelNode.textContent = label;
-      const valueNode = document.createElement('span');
-      valueNode.className = 'mobile-status-value';
-      valueNode.dataset.mobileStatus = key;
-      item.append(labelNode, valueNode);
-      this.statusPanel.appendChild(item);
-      this.statusValues[key] = valueNode;
-    }
+    this.statusPanel.setAttribute('aria-label', 'Mobile resources');
+    const bombGroup = document.createElement('div');
+    bombGroup.className = 'mobile-resource-group mobile-bomb-group';
+    const bombLabel = document.createElement('span');
+    bombLabel.className = 'mobile-hud-sprite mobile-bomb-label';
+    bombLabel.setAttribute('aria-hidden', 'true');
+    const bombStars = document.createElement('div');
+    bombStars.className = 'mobile-bomb-stars';
+    bombStars.dataset.mobileStars = 'bombs';
+    bombStars.setAttribute('aria-label', 'Bombs');
+    bombGroup.append(bombLabel, bombStars);
+
+    const powerGroup = document.createElement('div');
+    powerGroup.className = 'mobile-resource-group mobile-power-group';
+    const powerLabel = document.createElement('span');
+    powerLabel.className = 'mobile-hud-sprite mobile-power-label';
+    powerLabel.setAttribute('aria-hidden', 'true');
+    const powerMeter = document.createElement('div');
+    powerMeter.className = 'mobile-power-meter';
+    const powerFill = document.createElement('div');
+    powerFill.className = 'mobile-power-fill';
+    powerFill.dataset.mobileStatus = 'power-fill';
+    powerMeter.appendChild(powerFill);
+    const powerValue = document.createElement('span');
+    powerValue.className = 'mobile-power-value';
+    powerValue.dataset.mobileStatus = 'power';
+    powerGroup.append(powerLabel, powerMeter, powerValue);
+    this.statusPanel.append(bombGroup, powerGroup);
+    this.statusValues = { ...(this.statusValues || {}), bombStars, powerFill, power: powerValue };
   }
   mount() {
     this.ensureViewport();
@@ -619,6 +647,7 @@ class MobileTouchController {
     }
     this.ensureStatusPanel();
     this.shell.prepend(this.controls);
+    this.shell.insertBefore(this.topStatusPanel, this.viewport);
     this.shell.appendChild(this.statusPanel);
     this.shell.addEventListener('pointerdown', this.boundPointerDown, { passive: false });
     this.shell.addEventListener('pointermove', this.boundPointerMove, { passive: false });
@@ -633,6 +662,7 @@ class MobileTouchController {
     this.shell.removeEventListener('pointercancel', this.boundPointerUp);
     this.shell.classList.remove('mobile-gameplay');
     this.controls?.remove();
+    this.topStatusPanel?.remove();
     this.statusPanel?.remove();
     if (this.viewport?.parentElement) {
       this.viewport.parentElement.insertBefore(this.canvas, this.viewport);
@@ -663,8 +693,22 @@ class MobileTouchController {
     this.shotModeButton.classList.toggle('is-active', this.shotFocus);
     this.shotModeButton.setAttribute('aria-pressed', String(this.shotFocus));
   }
+  renderStars(container, count, className) {
+    if (!container) return;
+    const safeCount = clamp(count | 0, 0, 8);
+    if (container.dataset.count === String(safeCount)) return;
+    container.dataset.count = String(safeCount);
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < safeCount; i++) {
+      const star = document.createElement('span');
+      star.className = `mobile-star ${className}`;
+      star.setAttribute('aria-hidden', 'true');
+      fragment.appendChild(star);
+    }
+    container.replaceChildren(fragment);
+  }
   isControlTarget(target) {
-    return !!target?.closest?.('.mobile-controls, .mobile-status-panel');
+    return !!target?.closest?.('.mobile-controls, .mobile-top-status-panel, .mobile-status-panel');
   }
   isGameplayPhase(phase) {
     return !['title', 'difficulty', 'character'].includes(phase);
@@ -678,19 +722,25 @@ class MobileTouchController {
       this.shell.classList.toggle('mobile-gameplay', gameplay);
     }
     if (!this.portraitGameplay || !this.statusValues) return;
+    const power = clamp(game.power | 0, 0, 128);
     const values = {
       score: String(Math.max(0, game.score || 0)).padStart(9, '0'),
-      lives: String(Math.max(0, game.lives | 0)),
-      bombs: String(Math.max(0, game.bombs | 0)),
-      power: game.power >= 128 ? 'MAX' : String(Math.max(0, game.power | 0)),
-      graze: String(Math.max(0, game.graze | 0)),
-      point: String(Math.max(0, game.pointItemsCollectedInStage || 0))
+      lives: clamp(game.lives | 0, 0, 8),
+      bombs: clamp(game.bombs | 0, 0, 8),
+      power,
+      powerText: power >= 128 ? 'MAX' : `${power}/128`
     };
-    const key = `${game.phase}|${values.score}|${values.lives}|${values.bombs}|${values.power}|${values.graze}|${values.point}`;
+    const key = `${game.phase}|${values.score}|${values.lives}|${values.bombs}|${values.power}`;
     if (key === this.statusKey) return;
     this.statusKey = key;
-    for (const [field, value] of Object.entries(values)) {
-      if (this.statusValues[field]) this.statusValues[field].textContent = value;
+    if (this.statusValues.score) this.statusValues.score.textContent = values.score;
+    this.renderStars(this.statusValues.lifeStars, values.lives, 'mobile-life-star');
+    this.renderStars(this.statusValues.bombStars, values.bombs, 'mobile-bomb-star');
+    if (this.statusValues.power) this.statusValues.power.textContent = values.powerText;
+    if (this.statusValues.powerFill) {
+      const percent = `${Math.round(values.power * 1000 / 128) / 10}%`;
+      this.statusValues.powerFill.style.width = percent;
+      this.statusValues.powerFill.dataset.power = String(values.power);
     }
   }
   onPointerDown(event) {
@@ -766,6 +816,7 @@ class MobileTouchController {
   snapshot() {
     const controls = this.controls?.getBoundingClientRect();
     const viewport = this.viewport?.getBoundingClientRect();
+    const topStatus = this.topStatusPanel?.getBoundingClientRect();
     const status = this.statusPanel?.getBoundingClientRect();
     const canvas = this.canvas.getBoundingClientRect();
     return {
@@ -773,6 +824,7 @@ class MobileTouchController {
       shotFocus: this.shotFocus,
       controls: controls ? { x: controls.x, y: controls.y, w: controls.width, h: controls.height } : null,
       viewport: viewport ? { x: viewport.x, y: viewport.y, w: viewport.width, h: viewport.height } : null,
+      topStatus: topStatus ? { x: topStatus.x, y: topStatus.y, w: topStatus.width, h: topStatus.height } : null,
       status: status ? { x: status.x, y: status.y, w: status.width, h: status.height } : null,
       canvas: { x: canvas.x, y: canvas.y, w: canvas.width, h: canvas.height },
       portraitGameplay: this.portraitGameplay

@@ -91,6 +91,7 @@ canvas {
 
 .mobile-controls,
 .mobile-game-viewport,
+.mobile-top-status-panel,
 .mobile-status-panel {
   display: none;
 }
@@ -115,7 +116,8 @@ html.mobile-touch .game-shell {
   --mobile-safe-bottom: max(env(safe-area-inset-bottom), 8px);
   --mobile-safe-left: max(env(safe-area-inset-left), 8px);
   --mobile-gap: 6px;
-  --mobile-status-h: 54px;
+  --mobile-top-h: 32px;
+  --mobile-status-h: 58px;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -186,16 +188,63 @@ html.mobile-touch .mobile-controls {
 }
 
 html.mobile-touch .game-shell.mobile-gameplay {
-  grid-template-rows: minmax(0, auto) auto;
+  grid-template-rows: var(--mobile-top-h) minmax(0, 1fr) var(--mobile-status-h);
   row-gap: var(--mobile-gap);
+  align-content: stretch;
+  align-items: stretch;
+}
+
+html.mobile-touch .game-shell.mobile-gameplay .mobile-top-status-panel {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--mobile-top-h);
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 3px 8px;
+  color: #f8f8ff;
+  background:
+    linear-gradient(90deg, rgba(5, 5, 8, 0.96), rgba(16, 17, 24, 0.84) 62%, rgba(5, 5, 8, 0));
+  font: 700 12px "MS Gothic", "Yu Gothic", monospace;
+  pointer-events: auto;
+}
+
+.mobile-top-score {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.mobile-top-label {
+  color: #aeb8d8;
+}
+
+.mobile-top-score-value {
+  color: #ffffff;
+}
+
+.mobile-life-stars,
+.mobile-bomb-stars {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
 }
 
 html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport {
   grid-column: 1;
-  grid-row: 1;
-  width: min(100%, calc((100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap)) * 384 / 448));
-  max-height: calc(100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap));
-  aspect-ratio: 384 / 448;
+  grid-row: 2;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  align-self: stretch;
+  justify-self: stretch;
 }
 
 html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport > canvas {
@@ -207,36 +256,108 @@ html.mobile-touch .game-shell.mobile-gameplay .mobile-game-viewport > canvas {
 
 html.mobile-touch .game-shell.mobile-gameplay .mobile-status-panel {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   display: grid;
-  width: min(100%, calc((100svh - var(--mobile-safe-top) - var(--mobile-safe-bottom) - var(--mobile-status-h) - var(--mobile-gap)) * 384 / 448));
+  width: 100%;
   min-height: var(--mobile-status-h);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px 8px;
+  grid-template-columns: minmax(156px, auto) minmax(108px, 1fr);
+  align-items: center;
+  gap: 8px;
   padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.38);
   color: #f8f8ff;
-  background: rgba(8, 7, 18, 0.92);
+  background:
+    linear-gradient(180deg, rgba(196, 206, 224, 0.2), rgba(20, 24, 34, 0.1) 28%, rgba(0, 0, 0, 0.24) 74%),
+    repeating-linear-gradient(90deg, rgba(142, 154, 174, 0.28) 0 12px, rgba(28, 33, 44, 0.62) 12px 24px),
+    rgba(8, 7, 18, 0.94);
   font: 700 11px "MS Gothic", "Yu Gothic", monospace;
   pointer-events: auto;
 }
 
-.mobile-status-item {
+.mobile-resource-group {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   white-space: nowrap;
 }
 
-.mobile-status-label {
-  color: #aeb8d8;
+.mobile-resource-group.mobile-power-group {
+  justify-content: flex-end;
 }
 
-.mobile-status-value {
-  min-width: 0;
+.mobile-hud-sprite,
+.mobile-star {
+  flex: 0 0 auto;
+  background-image: url("../assets/th06-img/png/front.png");
+  background-repeat: no-repeat;
+  background-size: 256px 256px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.mobile-bomb-label {
+  width: 48px;
+  height: 16px;
+  background-position: 0 -160px;
+}
+
+.mobile-power-label {
+  width: 48px;
+  height: 16px;
+  background-position: -32px -208px;
+}
+
+.mobile-star {
+  width: 16px;
+  height: 16px;
+}
+
+.mobile-life-star {
+  background-position: -32px -240px;
+}
+
+.mobile-bomb-star {
+  background-position: -48px -240px;
+}
+
+.mobile-power-meter {
+  position: relative;
+  flex: 1 1 88px;
+  min-width: 72px;
+  max-width: 128px;
+  height: 16px;
   overflow: hidden;
+  border: 1px solid rgba(210, 226, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.5), rgba(48, 58, 78, 0.42)),
+    rgba(7, 9, 18, 0.86);
+}
+
+.mobile-power-fill {
+  width: 0;
+  height: 100%;
+  background:
+    linear-gradient(90deg, rgba(216, 224, 255, 0.95), rgba(112, 224, 255, 0.76));
+}
+
+.mobile-power-value {
+  flex: 0 0 34px;
   color: #ffffff;
   text-align: right;
+}
+
+@media (max-width: 360px) {
+  html.mobile-touch .game-shell {
+    --mobile-status-h: 62px;
+  }
+
+  html.mobile-touch .game-shell.mobile-gameplay .mobile-status-panel {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .mobile-resource-group.mobile-power-group {
+    justify-content: flex-start;
+  }
 }
