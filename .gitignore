@@ -4,13 +4,6 @@ reference/
 .codex
 assets/audio/*.mid
 
-docs/
-scripts/
-tests/
-package.json
-package-lock.json
-playwright.config.*
-
 assets/th06-img/jpg/*
 !assets/th06-img/jpg/select00.jpg
 !assets/th06-img/jpg/title00.jpg
