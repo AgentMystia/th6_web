@@ -306,15 +306,16 @@ function unregisterMobileServiceWorker() {
 
 function configureMobilePwa(enabled, testMode = false) {
   if (!canUseServiceWorker()) return;
-  if (testMode) {
+  if (testMode || !enabled) {
     unregisterMobileServiceWorker();
   } else {
     navigator.serviceWorker.register(MOBILE_SW_PATH).catch(() => {});
   }
 }
 
-function shouldRequireRuntimeCache(testMode = false) {
-  return !testMode
+function shouldRequireRuntimeCache(mobileEnabled, testMode = false) {
+  return !!mobileEnabled
+    && !testMode
     && typeof location !== 'undefined'
     && (location.protocol === 'http:' || location.protocol === 'https:');
 }
@@ -356,8 +357,8 @@ function waitForServiceWorkerController(timeoutMs = 1500) {
   });
 }
 
-async function ensureRuntimeCache(testMode = false, onStatus = null) {
-  if (!shouldRequireRuntimeCache(testMode)) return { required: false, ready: true };
+async function ensureRuntimeCache(mobileEnabled, testMode = false, onStatus = null) {
+  if (!shouldRequireRuntimeCache(mobileEnabled, testMode)) return { required: false, ready: true };
   if (!canUseServiceWorker() || typeof caches === 'undefined') {
     throw new Error('This browser cannot cache all runtime assets before starting.');
   }
@@ -863,27 +864,31 @@ class AudioBus {
     this.fadeToken = 0;
     this.pendingLabel = '';
     this.unlocked = false;
-    const unlock = () => this.unlock();
-    addEventListener('keydown', unlock, { once: true });
-    addEventListener('pointerdown', unlock, { once: true });
+    this.unlocking = false;
+    this.unlockHandler = () => {
+      this.unlock().catch(() => {});
+    };
+    addEventListener('keydown', this.unlockHandler);
+    addEventListener('pointerdown', this.unlockHandler);
   }
   async unlock() {
-    this.unlocked = true;
-    for (const audio of Object.values(this.tracks)) {
-      try {
-        audio.muted = true;
-        await audio.play();
-        audio.pause();
-        audio.currentTime = 0;
-        audio.muted = false;
-      } catch {}
-    }
-    for (const pool of this.sfxBuffers) {
-      for (const audio of pool) audio.load();
-    }
-    if (this.active) {
-      const audio = this.tracks[this.active];
-      if (audio) audio.play().catch(() => {});
+    if (this.unlocked || this.unlocking) return;
+    this.unlocking = true;
+    try {
+      const activeTrack = this.active ? this.tracks[this.active] : null;
+      if (activeTrack) {
+        await activeTrack.play();
+        activeTrack.pause();
+      }
+      for (const pool of this.sfxBuffers) {
+        for (const audio of pool) audio.load();
+      }
+      this.unlocked = true;
+      removeEventListener('keydown', this.unlockHandler);
+      removeEventListener('pointerdown', this.unlockHandler);
+      if (activeTrack) activeTrack.play().catch(() => {});
+    } finally {
+      this.unlocking = false;
     }
   }
   sfx(soundIdx) {
@@ -5624,7 +5629,9 @@ async function main() {
   canvas.height = GAME_HEIGHT;
   shell.appendChild(canvas);
   host.appendChild(shell);
-  const cacheRequired = shouldRequireRuntimeCache(new URLSearchParams(location.search).has('test'));
+  const testMode = new URLSearchParams(location.search).has('test');
+  const initialMobileMode = isMobileTouchMode();
+  const cacheRequired = shouldRequireRuntimeCache(initialMobileMode, testMode);
   let startupStatus = null;
   let startupStatusMessage = null;
   let startupStatusFill = null;
@@ -5666,9 +5673,8 @@ async function main() {
       : '准备中...';
     startupStatus.classList.toggle('is-error', failed);
   };
-  const testMode = new URLSearchParams(location.search).has('test');
   try {
-    await ensureRuntimeCache(testMode, setStartupStatus);
+    await ensureRuntimeCache(initialMobileMode, testMode, setStartupStatus);
   } catch (error) {
     console.error(error);
     setStartupStatus('资源缓存失败，请检查网络后刷新。', true);
@@ -5694,7 +5700,7 @@ async function main() {
   const syncMobileUi = () => {
     if (game.mobileInputMode) mobileController.syncGameState(game);
   };
-  applyMobileMode(isMobileTouchMode());
+  applyMobileMode(initialMobileMode);
   if (testMode) {
     const round = (value) => Math.round((value || 0) * 1000) / 1000;
     const snapshot = () => {
