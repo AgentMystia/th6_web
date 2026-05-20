@@ -430,10 +430,12 @@ test('Stage 2 lake background uses original STD perspective tiles with source fo
 });
 
 test('BGM transitions cut stale tracks before starting the next original cue', () => {
+  assert.match(main, /unlock\(\)[\s\S]*?const activeTrack = this\.active \? this\.tracks\[this\.active\] : null;[\s\S]*?const probeTrack = activeTrack \|\| Object\.values\(this\.tracks\)\[0\];[\s\S]*?this\.playActiveTrack\(\);/);
   assert.match(main, /playBgm\(id, options = \{\}\)[\s\S]*?if \(this\.active === id\) \{[\s\S]*?this\.stopTracksExcept\(id\);[\s\S]*?return;/);
   assert.match(main, /playBgm\(id, options = \{\}\)[\s\S]*?this\.stopTracksExcept\(id\);[\s\S]*?next\.volume = 0;/);
+  assert.match(main, /const t = Math\.min\(1, Math\.max\(0, \(now - start\) \/ duration\)\);[\s\S]*?if \(next\) next\.volume = 0\.65 \* t;/);
   assert.match(main, /stopTracksExcept\(activeId = null\)[\s\S]*?Object\.entries\(this\.tracks\)[\s\S]*?if \(trackId === activeId\) continue;[\s\S]*?audio\.pause\(\);[\s\S]*?audio\.volume = 0;/);
-  assert.match(main, /fadeOutBgm\(seconds = 4\)[\s\S]*?const tracks = Object\.values\(this\.tracks\);[\s\S]*?for \(const audio of tracks\) audio\.pause\(\);/);
+  assert.match(main, /fadeOutBgm\(seconds = 4\)[\s\S]*?const tracks = Object\.values\(this\.tracks\);[\s\S]*?const t = Math\.min\(1, Math\.max\(0, \(now - start\) \/ duration\)\);[\s\S]*?for \(const audio of tracks\) audio\.pause\(\);/);
   assert.match(main, /sync\(id\) \{[\s\S]*?if \(id == null\) return;[\s\S]*?this\.playBgm\(id, \{ restart: false \}\);/);
 });
 

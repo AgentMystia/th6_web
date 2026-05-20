@@ -74,6 +74,26 @@ test('test hook exposes original hitbox and bullet cap constants', async ({ page
   expect(errors).toEqual([]);
 });
 
+test('Stage 1 boss BGM transition and Rumia defeat keep audio volumes in range', async ({ page }) => {
+  const errors = await ready(page, canvasUrl);
+  const snapshot = await page.evaluate(() => {
+    window.__TH06_TEST__.setStage(1, {
+      power: 128,
+      alive: true,
+      bulletGrace: 999999,
+      autoplay: true,
+      x: 192,
+      y: 384
+    });
+    window.__TH06_TEST__.advance(5900, { x: 192, y: 384, invuln: true });
+    window.__TH06_TEST__.killBosses();
+    return window.__TH06_TEST__.advance(240, { x: 192, y: 384, invuln: true });
+  });
+  expect(snapshot.stage).toBe(1);
+  expect(snapshot.boss.name).toBe('Rumia');
+  expect(errors).toEqual([]);
+});
+
 test('difficulty menu exposes all main difficulties with Normal selected by default', async ({ page }) => {
   const errors = await ready(page);
   let snapshot = await page.evaluate(() => window.__TH06_TEST__.snapshot());
@@ -151,7 +171,7 @@ test('desktop web runtime caches audio and core assets before showing the game',
   await page.waitForFunction(async () => {
     if (!navigator.serviceWorker?.controller || typeof caches === 'undefined') return false;
     if (document.querySelector('.startup-cache-status')) return false;
-    const cache = await caches.open('touhou-web-runtime-v10');
+    const cache = await caches.open('touhou-web-runtime-v11');
     return !!await cache.match('assets/audio/th06_13.ogg')
       && !!await cache.match('assets/sfx/plst00.wav')
       && !!await cache.match('assets/th06-img/png/stg6enm2.png')

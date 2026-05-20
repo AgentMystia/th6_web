@@ -200,7 +200,7 @@ const TITLE_MENU_ITEMS = [
   { id: 'quit', label: 'Quit', enabled: false }
 ];
 const MOBILE_SW_PATH = 'sw.js';
-const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v10';
+const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v11';
 const RUNTIME_CACHE_CONCURRENCY = 4;
 const BGM_FILES = {
   stage1: 'assets/audio/stage1.ogg',
@@ -897,25 +897,55 @@ class AudioBus {
     this.unlockHandler = () => {
       this.unlock().catch(() => {});
     };
+    this.unlockListenersActive = false;
+    this.ensureUnlockListeners();
+  }
+  ensureUnlockListeners() {
+    if (this.unlockListenersActive || this.unlocked) return;
     addEventListener('keydown', this.unlockHandler);
     addEventListener('pointerdown', this.unlockHandler);
+    this.unlockListenersActive = true;
+  }
+  removeUnlockListeners() {
+    if (!this.unlockListenersActive) return;
+    removeEventListener('keydown', this.unlockHandler);
+    removeEventListener('pointerdown', this.unlockHandler);
+    this.unlockListenersActive = false;
+  }
+  async primeAudioElement(audio) {
+    if (!audio) return false;
+    const volume = audio.volume;
+    try {
+      audio.volume = 0;
+      await audio.play();
+      audio.pause();
+      audio.currentTime = 0;
+      return true;
+    } finally {
+      audio.volume = volume;
+    }
+  }
+  playActiveTrack() {
+    const activeTrack = this.active ? this.tracks[this.active] : null;
+    if (activeTrack) activeTrack.play().catch(() => this.markLocked());
+  }
+  markLocked() {
+    this.unlocked = false;
+    this.ensureUnlockListeners();
   }
   async unlock() {
     if (this.unlocked || this.unlocking) return;
     this.unlocking = true;
     try {
       const activeTrack = this.active ? this.tracks[this.active] : null;
-      if (activeTrack) {
-        await activeTrack.play();
-        activeTrack.pause();
-      }
+      const probeTrack = activeTrack || Object.values(this.tracks)[0];
+      await this.primeAudioElement(probeTrack);
       for (const pool of this.sfxBuffers) {
         for (const audio of pool) audio.load();
       }
       this.unlocked = true;
-      removeEventListener('keydown', this.unlockHandler);
-      removeEventListener('pointerdown', this.unlockHandler);
-      if (activeTrack) activeTrack.play().catch(() => {});
+      this.removeUnlockListeners();
+      this.playActiveTrack();
     } finally {
       this.unlocking = false;
     }
@@ -951,14 +981,15 @@ class AudioBus {
     if (next) {
       next.currentTime = options.restart === false ? next.currentTime : 0;
       next.volume = 0;
-      if (this.unlocked) next.play().catch(() => {});
+      if (this.unlocked) next.play().catch(() => this.markLocked());
+      else this.ensureUnlockListeners();
     }
     const token = ++this.fadeToken;
     const start = performance.now();
     const duration = Math.max(1, options.fadeMs ?? 700);
     const fade = (now) => {
       if (token !== this.fadeToken) return;
-      const t = Math.min(1, (now - start) / duration);
+      const t = Math.min(1, Math.max(0, (now - start) / duration));
       if (next) next.volume = 0.65 * t;
       if (t < 1) requestAnimationFrame(fade);
     };
@@ -982,7 +1013,7 @@ class AudioBus {
     const duration = Math.max(1, seconds * 1000);
     const fade = (now) => {
       if (token !== this.fadeToken) return;
-      const t = Math.min(1, (now - start) / duration);
+      const t = Math.min(1, Math.max(0, (now - start) / duration));
       for (const audio of tracks) audio.volume = (startVolumes.get(audio) || 0) * (1 - t);
       if (t === 1) {
         for (const audio of tracks) audio.pause();
