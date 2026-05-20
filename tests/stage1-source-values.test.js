@@ -275,8 +275,9 @@ test('release runtime does not keep the old hand-authored approximate Stage fall
 
 test('input path buffers keydown edges until the next fixed simulation frame', () => {
   assert.match(main, /this\.downEdges = new Set\(\)/);
-  assert.match(main, /if \(!event\.repeat && !this\.held\.has\(button\)\) this\.downEdges\.add\(button\)/);
-  assert.match(main, /const pressed = new Set\(this\.downEdges\);[\s\S]*?this\.downEdges\.clear\(\);[\s\S]*?const held = new Set\(this\.held\);[\s\S]*?return \{\s*held,\s*pressed,/);
+  assert.match(main, /if \(!event\.repeat && !this\.held\.has\(button\)\) \{[\s\S]*?this\.downEdges\.add\(button\);[\s\S]*?changed = true;/);
+  assert.match(main, /const pressed = new Set\(this\.downEdges\);[\s\S]*?this\.downEdges\.clear\(\);[\s\S]*?const held = new Set\(this\.held\);[\s\S]*?const inputStamps = this\.pendingInputStamps\.splice\(0\);[\s\S]*?return \{\s*held,\s*pressed,/);
+  assert.match(main, /inputStamps/);
   assert.match(main, /const shootHeld = input\.held\.has\('shoot'\) \|\| \(mobileMode && input\.mobileShootHeld\);[\s\S]*?if \(!shootHeld\) this\.player\.shotFrame = -1;/);
   assert.match(main, /if \(shootHeld && this\.player\.shotFrame >= 0\)/);
   assert.doesNotMatch(main, /this\.prev = new Set/);
@@ -298,7 +299,10 @@ test('browser loop uses original-style processing drop instead of catch-up simul
   const gameWindowSource = readFileSync(new URL('../reference/th06-master/src/GameWindow.cpp', import.meta.url), 'utf8');
   assert.match(gameWindowSource, /#define FRAME_TIME \(1000\. \/ 60\.\)/);
   assert.match(gameWindowSource, /g_LastFrameTime \+= FRAME_TIME;[\s\S]*?if \(g_Supervisor\.cfg\.frameskipConfig < this->curFrame\)/);
-  assert.match(main, /if \(acc \+ STEP_EPSILON_MS >= STEP_MS\) \{[\s\S]*?game\.update\(input\.frame\(\)\);/);
+  assert.match(main, /if \(acc \+ STEP_EPSILON_MS >= STEP_MS\) \{[\s\S]*?const runtimeInput = input\.frame\(\);[\s\S]*?game\.update\(runtimeInput\);/);
+  assert.match(main, /if \(steps > 0\) \{[\s\S]*?drawSafely\(\);[\s\S]*?\} else \{[\s\S]*?lastRenderSkipped = true;[\s\S]*?totalRenderSkips\+\+;/);
+  assert.match(main, /recordInputLatencies\('update', consumedInputStamps, inputConsumeTime\)/);
+  assert.match(main, /recordInputLatencies\('draw', consumedInputStamps, drawEnd\)/);
   assert.doesNotMatch(main, /if \(activity\) acc = Math\.max\(acc, STEP_MS\);/);
   assert.doesNotMatch(main, /while \(acc \+ STEP_EPSILON_MS >= STEP_MS\) \{/);
   assert.doesNotMatch(main, /MAX_SIMULATION_STEPS_PER_TICK/);

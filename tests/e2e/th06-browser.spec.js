@@ -151,8 +151,8 @@ test('desktop web runtime caches audio and core assets before showing the game',
   await page.waitForFunction(async () => {
     if (!navigator.serviceWorker?.controller || typeof caches === 'undefined') return false;
     if (document.querySelector('.startup-cache-status')) return false;
-    const cache = await caches.open('touhou-web-runtime-v9');
-    return !!await cache.match('assets/audio/th06_13.mp3')
+    const cache = await caches.open('touhou-web-runtime-v10');
+    return !!await cache.match('assets/audio/th06_13.ogg')
       && !!await cache.match('assets/sfx/plst00.wav')
       && !!await cache.match('assets/th06-img/png/stg6enm2.png')
       && !!await cache.match('src/vanilla/main.js')
@@ -363,6 +363,8 @@ test('mobile fixed simulation never exceeds 60Hz and drops processing when rAF i
   });
   expect(fast.steps).toBe(60);
   expect(fast.droppedFrames).toBe(0);
+  expect(fast.draws).toBe(60);
+  expect(fast.renderSkips).toBe(60);
   expect(fast.snapshot.frame).toBe(60);
 
   const slow = await page.evaluate(() => {
@@ -371,7 +373,30 @@ test('mobile fixed simulation never exceeds 60Hz and drops processing when rAF i
   });
   expect(slow.steps).toBe(30);
   expect(slow.droppedFrames).toBe(30);
+  expect(slow.draws).toBe(30);
+  expect(slow.renderSkips).toBe(0);
   expect(slow.snapshot.frame).toBe(30);
+  expect(errors).toEqual([]);
+});
+
+test('desktop high refresh input skips stale draws until the keyboard event is simulated', async ({ page }) => {
+  const errors = await ready(page, desktopUrl);
+  const result = await page.evaluate(() => {
+    window.__TH06_TEST__.setStage(1, { power: 128, alive: true, bulletGrace: 0, x: 192, y: 384 });
+    return window.__TH06_TEST__.simulateDesktopInputLoop(Array.from({ length: 3 }, () => 1000 / 120), {
+      inputFrame: 0,
+      button: 'right'
+    });
+  });
+  expect(result.steps).toBe(1);
+  expect(result.draws).toBe(1);
+  expect(result.renderSkips).toBe(2);
+  expect(result.skippedDrawsBeforeInputUpdate).toBe(1);
+  expect(result.staleDrawsAfterInput).toBe(0);
+  expect(result.firstDrawAfterInput).toMatchObject({ frameIndex: 1, afterUpdate: true });
+  expect(result.firstDrawAfterInput.playerX).toBeGreaterThan(result.startX);
+  expect(result.perf.inputUpdate.count).toBe(1);
+  expect(result.perf.inputDraw.count).toBe(1);
   expect(errors).toEqual([]);
 });
 

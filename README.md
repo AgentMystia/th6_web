@@ -64,6 +64,11 @@ npm run prepare-pages
 
 ### Changelog
 
+#### 2026-05-20
+
+- 将运行时 BGM 从 MP3 替换为 Ogg/Opus，降低首次缓存和发布包体积。
+- 优化桌面键盘低延迟路径：拆分输入消费/绘制延迟统计，并跳过高刷新率下未推进逻辑的重复绘制。
+
 #### 2026-05-17
 
 - 实装主线 Easy / Normal / Hard / Lunatic 四难度选择，默认光标按原作停在 Normal。
@@ -122,7 +127,7 @@ npm run prepare-pages
 - 尚无原版 replay / golden frame 逐帧对比，不能证明完全像素级一致。
 - Stage 3-6 已可运行，但符卡节奏、背景、特效仍可能存在细节偏差。
 - Canvas 渲染与原作 DirectX 在混合、取整、采样上可能存在差异。
-- BGM 使用完整 MP3 后，发布包体积增大。
+- BGM 仍是主要运行时资源；当前使用 Ogg/Opus 以降低加载体积。
 
 ### 版权
 
@@ -192,6 +197,11 @@ The browser runtime does not need `reference/`. Without it, some source audits s
 
 ### Changelog
 
+#### 2026-05-20
+
+- Replaced runtime BGM MP3 files with Ogg/Opus files to reduce first-load caching and release size.
+- Improved the desktop keyboard low-latency path with split input update/draw metrics and skipped duplicate high-refresh draws without simulation steps.
+
 #### 2026-05-17
 
 - Implemented the main Easy / Normal / Hard / Lunatic difficulty selection, with Normal selected by default like the original.
@@ -250,7 +260,7 @@ The browser runtime does not need `reference/`. Without it, some source audits s
 - No original replay / golden frame comparison yet, so pixel-perfect parity is not proven.
 - Stages 3-6 run, but spell timing, backgrounds, and effects may still differ in details.
 - Canvas rendering may differ from the original DirectX renderer in blending, rounding, and sampling.
-- Full MP3 BGM increases the published bundle size.
+- BGM is still the largest runtime asset class; it now uses Ogg/Opus to reduce load size.
 
 ### Copyright
 

@@ -5,11 +5,22 @@ const PLAYFIELD = { x: 32, y: 16, width: 384, height: 448, right: 416, bottom: 4
 const MOVE_AREA = { x: 8, y: 16, right: 376, bottom: 432 };
 const STEP_MS = 1000 / 60;
 const STEP_EPSILON_MS = 0.0001;
+const INPUT_STAMP_HISTORY_LIMIT = 64;
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const ANGLE_EPSILON = 1e-6;
 const TH06_LOGIC = TH06_GLOBAL.TH06Logic;
 const TH06_PLAYER_DATA = TH06_GLOBAL.TH06PlayerData;
+
+function nowMs() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function eventStampMs(event = null) {
+  const now = nowMs();
+  const stamp = event?.timeStamp;
+  return Number.isFinite(stamp) && Math.abs(now - stamp) < 60000 ? stamp : now;
+}
 if (!TH06_LOGIC) throw new Error('TH06Logic source tables must be loaded before main.js');
 if (!TH06_PLAYER_DATA) throw new Error('TH06PlayerData source tables must be loaded before main.js');
 const PLAYER_HITBOX_HALF = { x: 1.25, y: 1.25, z: 5 };
@@ -189,21 +200,21 @@ const TITLE_MENU_ITEMS = [
   { id: 'quit', label: 'Quit', enabled: false }
 ];
 const MOBILE_SW_PATH = 'sw.js';
-const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v9';
+const RUNTIME_CACHE_NAME = 'touhou-web-runtime-v10';
 const RUNTIME_CACHE_CONCURRENCY = 4;
 const BGM_FILES = {
-  stage1: 'assets/audio/stage1.mp3',
-  boss1: 'assets/audio/boss1.mp3',
-  stage2: 'assets/audio/th06_04.mp3',
-  boss2: 'assets/audio/th06_05.mp3',
-  stage3: 'assets/audio/th06_06.mp3',
-  boss3: 'assets/audio/th06_07.mp3',
-  stage4: 'assets/audio/th06_08.mp3',
-  boss4: 'assets/audio/th06_09.mp3',
-  stage5: 'assets/audio/th06_10.mp3',
-  boss5: 'assets/audio/th06_11.mp3',
-  stage6: 'assets/audio/th06_12.mp3',
-  boss6: 'assets/audio/th06_13.mp3'
+  stage1: 'assets/audio/stage1.ogg',
+  boss1: 'assets/audio/boss1.ogg',
+  stage2: 'assets/audio/th06_04.ogg',
+  boss2: 'assets/audio/th06_05.ogg',
+  stage3: 'assets/audio/th06_06.ogg',
+  boss3: 'assets/audio/th06_07.ogg',
+  stage4: 'assets/audio/th06_08.ogg',
+  boss4: 'assets/audio/th06_09.ogg',
+  stage5: 'assets/audio/th06_10.ogg',
+  boss5: 'assets/audio/th06_11.ogg',
+  stage6: 'assets/audio/th06_12.ogg',
+  boss6: 'assets/audio/th06_13.ogg'
 };
 
 const keyMap = new Map([
@@ -449,6 +460,8 @@ class Input {
     this.activity = false;
     this.activityStamp = 0;
     this.lastConsumedActivityStamp = 0;
+    this.pendingInputStamps = [];
+    this.lastConsumedInputStamps = [];
     this.mobileController = null;
     addEventListener('keydown', (event) => this.down(event), { passive: false });
     addEventListener('keyup', (event) => this.up(event), { passive: false });
@@ -460,10 +473,15 @@ class Input {
     });
   }
   markActivity(event = null) {
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const stamp = event?.timeStamp;
-    this.activityStamp = Number.isFinite(stamp) && Math.abs(now - stamp) < 60000 ? stamp : now;
+    const stamp = eventStampMs(event);
+    this.queueInputStamp(stamp);
     this.activity = true;
+  }
+  queueInputStamp(stamp) {
+    if (!Number.isFinite(stamp)) return;
+    this.activityStamp = stamp;
+    this.pendingInputStamps.push(stamp);
+    if (this.pendingInputStamps.length > INPUT_STAMP_HISTORY_LIMIT) this.pendingInputStamps.shift();
   }
   down(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
@@ -471,13 +489,15 @@ class Input {
     event.preventDefault();
     const wasKnownCode = this.codes.has(event.code);
     this.codes.add(event.code);
+    let changed = !event.repeat && !wasKnownCode;
     for (const button of buttons) {
-      const edgesBefore = this.downEdges.size;
-      if (!event.repeat && !this.held.has(button)) this.downEdges.add(button);
-      if (this.downEdges.size !== edgesBefore) this.markActivity(event);
+      if (!event.repeat && !this.held.has(button)) {
+        this.downEdges.add(button);
+        changed = true;
+      }
       this.held.add(button);
     }
-    if (!event.repeat && !wasKnownCode) this.markActivity(event);
+    if (changed) this.markActivity(event);
   }
   up(event) {
     const buttons = keyMap.get(event.code) || keyMap.get(event.key);
@@ -498,12 +518,15 @@ class Input {
     const pressed = new Set(this.downEdges);
     this.downEdges.clear();
     const held = new Set(this.held);
+    const inputStamps = this.pendingInputStamps.splice(0);
     let mobileFrame = null;
     if (this.mobileController?.enabled) {
       mobileFrame = this.mobileController.frame();
       if (mobileFrame.bombPressed) pressed.add('bomb');
       if (mobileFrame.shootHeld) held.add('shoot');
+      inputStamps.push(...(mobileFrame.inputStamps || []));
     }
+    this.lastConsumedInputStamps = inputStamps;
     return {
       held,
       pressed,
@@ -511,7 +534,8 @@ class Input {
       analogMove: mobileFrame?.analogMove || null,
       mobileShootHeld: !!mobileFrame?.shootHeld,
       mobileShotFocus: !!mobileFrame?.shotFocus,
-      mobileMenuTaps: mobileFrame?.menuTaps || []
+      mobileMenuTaps: mobileFrame?.menuTaps || [],
+      inputStamps
     };
   }
   consumeActivity() {
@@ -544,6 +568,7 @@ class MobileTouchController {
     this.menuTaps = [];
     this.activity = false;
     this.lastActivityStamp = 0;
+    this.pendingInputStamps = [];
     this.controls = null;
     this.viewport = null;
     this.topStatusPanel = null;
@@ -557,9 +582,10 @@ class MobileTouchController {
     this.boundPointerUp = (event) => this.onPointerUp(event);
   }
   markActivity(event = null) {
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const stamp = event?.timeStamp;
-    this.lastActivityStamp = Number.isFinite(stamp) && Math.abs(now - stamp) < 60000 ? stamp : now;
+    const stamp = eventStampMs(event);
+    this.lastActivityStamp = stamp;
+    this.pendingInputStamps.push(stamp);
+    if (this.pendingInputStamps.length > INPUT_STAMP_HISTORY_LIMIT) this.pendingInputStamps.shift();
     this.activity = true;
   }
   setEnabled(enabled) {
@@ -695,6 +721,7 @@ class MobileTouchController {
     this.dy = 0;
     this.bombEdges = 0;
     this.menuTaps.length = 0;
+    this.pendingInputStamps.length = 0;
   }
   setShotFocus(enabled) {
     this.shotFocus = !!enabled;
@@ -811,6 +838,7 @@ class MobileTouchController {
     const analogMove = { x: this.dx, y: this.dy };
     const bombPressed = this.bombEdges > 0;
     const menuTaps = this.menuTaps.splice(0);
+    const inputStamps = this.pendingInputStamps.splice(0);
     this.dx = 0;
     this.dy = 0;
     this.bombEdges = 0;
@@ -819,7 +847,8 @@ class MobileTouchController {
       bombPressed,
       shootHeld: true,
       shotFocus: this.shotFocus,
-      menuTaps
+      menuTaps,
+      inputStamps
     };
   }
   hasActivity() {
@@ -4078,7 +4107,7 @@ class SpriteBatch2D {
 class Renderer {
   constructor(canvas, assets, game) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { alpha: false });
+    this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.ctx.imageSmoothingEnabled = false;
     this.assets = assets;
     this.game = game;
@@ -4088,7 +4117,7 @@ class Renderer {
     this.spriteBatch = SPRITE_WEBGL_ENABLED ? new SpriteBatch2D(GAME_WIDTH, GAME_HEIGHT) : null;
     this.spriteBatchDisabled = !SPRITE_WEBGL_ENABLED;
     this.spriteBatchDisabledReason = '';
-    this.perfSamples = { update: [], draw: [], frame: [], input: [] };
+    this.perfSamples = { update: [], draw: [], frame: [], input: [], inputUpdate: [], inputDraw: [] };
     this.perfSampleLimit = 900;
     this.perf = {
       lastUpdateMs: 0,
@@ -4105,6 +4134,10 @@ class Renderer {
       accumulatorMs: 0,
       lastInputLatencyMs: 0,
       maxInputLatencyMs: 0,
+      lastInputUpdateLatencyMs: 0,
+      maxInputUpdateLatencyMs: 0,
+      lastInputDrawLatencyMs: 0,
+      maxInputDrawLatencyMs: 0,
       lastDrawError: '',
       stageWebgl: false,
       stageWebglError: '',
@@ -4124,10 +4157,37 @@ class Renderer {
     this.perf.maxDrawMs = 0;
     this.perf.maxFrameMs = 0;
     this.perf.maxInputLatencyMs = 0;
+    this.perf.maxInputUpdateLatencyMs = 0;
+    this.perf.maxInputDrawLatencyMs = 0;
+    this.perf.lastInputLatencyMs = 0;
+    this.perf.lastInputUpdateLatencyMs = 0;
+    this.perf.lastInputDrawLatencyMs = 0;
     this.perf.totalDroppedFrames = 0;
     this.perf.totalRenderSkips = 0;
     this.perf.lastDroppedFrames = 0;
     this.perf.lastRenderSkipped = false;
+  }
+  recordInputLatency(kind, stamp, at) {
+    if (!Number.isFinite(stamp) || !Number.isFinite(at)) return 0;
+    const latency = Math.max(0, at - stamp);
+    if (kind === 'update') {
+      this.perf.lastInputUpdateLatencyMs = latency;
+      this.perf.maxInputUpdateLatencyMs = Math.max(this.perf.maxInputUpdateLatencyMs, latency);
+      this.recordPerfSample('inputUpdate', latency);
+    } else if (kind === 'draw') {
+      this.perf.lastInputDrawLatencyMs = latency;
+      this.perf.maxInputDrawLatencyMs = Math.max(this.perf.maxInputDrawLatencyMs, latency);
+      this.recordPerfSample('inputDraw', latency);
+    } else {
+      this.perf.lastInputLatencyMs = latency;
+      this.perf.maxInputLatencyMs = Math.max(this.perf.maxInputLatencyMs, latency);
+      this.recordPerfSample('input', latency);
+    }
+    return latency;
+  }
+  recordInputLatencies(kind, stamps, at) {
+    if (!Array.isArray(stamps)) return;
+    for (const stamp of stamps) this.recordInputLatency(kind, stamp, at);
   }
   sampleSummary(kind) {
     const values = this.perfSamples[kind] || [];
@@ -4184,7 +4244,10 @@ class Renderer {
       draw: this.sampleSummary('draw'),
       frame: this.sampleSummary('frame'),
       input: this.sampleSummary('input'),
+      inputUpdate: this.sampleSummary('inputUpdate'),
+      inputDraw: this.sampleSummary('inputDraw'),
       droppedFrames: this.perf.totalDroppedFrames,
+      renderSkips: this.perf.totalRenderSkips,
       rendererMode: this.rendererMode(),
       fallbackReason: this.fallbackReason()
     };
@@ -5932,6 +5995,8 @@ async function main() {
       let localAcc = 0;
       let totalSteps = 0;
       let totalDroppedFrames = 0;
+      let totalDraws = 0;
+      let totalRenderSkips = 0;
       for (const delta of deltas) {
         localAcc += Math.min(250, Math.max(0, Number(delta) || 0));
         let steps = 0;
@@ -5950,12 +6015,112 @@ async function main() {
         totalSteps += steps;
         totalDroppedFrames += droppedFrames;
         if (steps) input.pressed.clear();
+        if (steps) {
+          renderer.draw();
+          totalDraws++;
+        } else {
+          totalRenderSkips++;
+        }
       }
-      renderer.draw();
       return {
         steps: totalSteps,
         droppedFrames: totalDroppedFrames,
+        draws: totalDraws,
+        renderSkips: totalRenderSkips,
         accumulatorMs: round(localAcc),
+        snapshot: snapshot()
+      };
+    };
+    const simulateDesktopInputLoop = (deltas, options = {}) => {
+      const button = options.button || 'right';
+      const inputFrame = Math.max(0, options.inputFrame ?? 0);
+      const held = new Set(options.initialHeld || []);
+      const pressed = new Set();
+      let localAcc = 0;
+      let localNow = 0;
+      let totalSteps = 0;
+      let totalDroppedFrames = 0;
+      let draws = 0;
+      let renderSkips = 0;
+      let skippedDrawsBeforeInputUpdate = 0;
+      let staleDrawsAfterInput = 0;
+      let inputPending = false;
+      let inputConsumed = false;
+      let firstDrawAfterInput = null;
+      let pendingInputStamps = [];
+      const startX = game.player.x;
+      renderer.resetPerf();
+      for (let i = 0; i < deltas.length; i++) {
+        if (i === inputFrame) {
+          held.add(button);
+          pressed.add(button);
+          pendingInputStamps.push(localNow);
+          inputPending = true;
+        }
+        const delta = Math.min(250, Math.max(0, Number(deltas[i]) || 0));
+        localNow += delta;
+        localAcc += delta;
+        let steps = 0;
+        let consumedThisFrame = [];
+        if (localAcc + STEP_EPSILON_MS >= STEP_MS) {
+          const runtimeInput = {
+            held: new Set(held),
+            pressed: new Set(pressed),
+            mobileMode: false,
+            analogMove: null,
+            mobileShootHeld: false,
+            mobileShotFocus: false,
+            mobileMenuTaps: [],
+            inputStamps: pendingInputStamps.splice(0)
+          };
+          consumedThisFrame = runtimeInput.inputStamps;
+          if (consumedThisFrame.length) {
+            inputConsumed = true;
+            renderer.recordInputLatencies('update', consumedThisFrame, localNow);
+          }
+          game.update(runtimeInput);
+          localAcc -= STEP_MS;
+          steps = 1;
+          if (Math.abs(localAcc) < STEP_EPSILON_MS) localAcc = 0;
+          pressed.clear();
+        }
+        let droppedFrames = 0;
+        if (localAcc + STEP_EPSILON_MS >= STEP_MS) {
+          droppedFrames = Math.floor((localAcc + STEP_EPSILON_MS) / STEP_MS);
+          localAcc -= droppedFrames * STEP_MS;
+          if (localAcc < STEP_EPSILON_MS) localAcc = 0;
+        }
+        totalSteps += steps;
+        totalDroppedFrames += droppedFrames;
+        if (steps) {
+          renderer.draw();
+          renderer.recordInputLatencies('draw', consumedThisFrame, localNow);
+          draws++;
+          if (inputPending && !firstDrawAfterInput) {
+            firstDrawAfterInput = {
+              frameIndex: i,
+              afterUpdate: inputConsumed,
+              playerX: round(game.player.x),
+              playerY: round(game.player.y)
+            };
+            if (!inputConsumed) staleDrawsAfterInput++;
+          }
+        } else {
+          renderSkips++;
+          if (inputPending && !inputConsumed) skippedDrawsBeforeInputUpdate++;
+        }
+      }
+      return {
+        steps: totalSteps,
+        droppedFrames: totalDroppedFrames,
+        draws,
+        renderSkips,
+        skippedDrawsBeforeInputUpdate,
+        staleDrawsAfterInput,
+        firstDrawAfterInput,
+        startX: round(startX),
+        finalX: round(game.player.x),
+        perf: renderer.perfSummary(),
         snapshot: snapshot()
       };
     };
@@ -6204,6 +6369,7 @@ async function main() {
       advance,
       measureFrames,
       simulateFrameLoop,
+      simulateDesktopInputLoop,
       setStageFrame,
       setAutoplay,
       setMobileMode,
@@ -6279,15 +6445,21 @@ async function main() {
   const tick = (now) => {
     acc += Math.min(250, now - last);
     last = now;
-    const activity = input.consumeActivity();
     const updateStart = performance.now();
     let steps = 0;
+    let activity = false;
+    let inputConsumeTime = 0;
+    let consumedInputStamps = [];
     if (acc + STEP_EPSILON_MS >= STEP_MS) {
-      game.update(input.frame());
+      const runtimeInput = input.frame();
+      consumedInputStamps = runtimeInput.inputStamps || [];
+      inputConsumeTime = performance.now();
+      game.update(runtimeInput);
       audio.sync(game.track);
       acc -= STEP_MS;
       steps++;
       if (Math.abs(acc) < STEP_EPSILON_MS) acc = 0;
+      activity = input.consumeActivity();
     }
     let droppedFrames = 0;
     if (acc + STEP_EPSILON_MS >= STEP_MS) {
@@ -6304,21 +6476,26 @@ async function main() {
     renderer.perf.totalDroppedFrames += droppedFrames;
     renderer.perf.accumulatorMs = acc;
     const activityStamp = input.lastConsumedActivityStamp || 0;
-    const inputLatency = activity && activityStamp ? Math.max(0, performance.now() - activityStamp) : 0;
-    renderer.perf.lastInputLatencyMs = inputLatency;
-    renderer.perf.maxInputLatencyMs = Math.max(renderer.perf.maxInputLatencyMs, inputLatency);
-    if (activity) renderer.recordPerfSample('input', inputLatency);
+    if (activity && activityStamp && inputConsumeTime) renderer.recordInputLatency('activity', activityStamp, inputConsumeTime);
+    if (inputConsumeTime) renderer.recordInputLatencies('update', consumedInputStamps, inputConsumeTime);
     fpsFrames++;
     if (now - fpsStamp >= 500) {
       renderer.fpsText = `${(fpsFrames * 1000 / (now - fpsStamp)).toFixed(2)}FPS`;
       fpsFrames = 0;
       fpsStamp = now;
     }
-    drawSafely();
+    if (steps > 0) {
+      const drew = drawSafely();
+      const drawEnd = performance.now();
+      if (drew) renderer.recordInputLatencies('draw', consumedInputStamps, drawEnd);
+      renderer.perf.lastRenderSkipped = false;
+    } else {
+      renderer.perf.lastRenderSkipped = true;
+      renderer.perf.totalRenderSkips++;
+    }
     const frameElapsed = performance.now() - updateStart;
     renderer.perf.lastFrameMs = frameElapsed;
     renderer.perf.maxFrameMs = Math.max(renderer.perf.maxFrameMs, frameElapsed);
-    renderer.perf.lastRenderSkipped = false;
     renderer.recordPerfSample('frame', frameElapsed);
     requestAnimationFrame(tick);
   };
