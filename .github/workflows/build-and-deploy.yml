@@ -1,0 +1,65 @@
+name: Build WASM & Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git --depth 1
+          cd emsdk && ./emsdk install 3.1.61 && ./emsdk activate 3.1.61
+
+      - name: Download DAT assets
+        run: |
+          for f in th06_IN.DAT th06_ST.DAT th06_ED.DAT th06_CM.DAT th06_TL.DAT th06_MD.DAT; do
+            curl -sL "https://github.com/${{ github.repository }}/releases/download/game-assets/$f" -o "$f"
+          done
+
+      - name: Build
+        run: |
+          source emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build/cmake
+          cmake --build build/cmake -j$(nproc)
+
+      - name: Embed DATs and re-link
+        run: |
+          source emsdk/emsdk_env.sh
+          cd build/cmake && cp ../../th06_*.DAT .
+          emcc @CMakeFiles/th06.dir/objects1.rsp -o th06.js \
+            -sUSE_WEBGL2=1 -sFULL_ES3=1 -sUSE_LIBPNG=1 -sUSE_LIBJPEG=1 \
+            -sALLOW_MEMORY_GROWTH=1 -sFORCE_FILESYSTEM=1 \
+            "-sEXPORTED_FUNCTIONS=_main,_th06_init,_th06_run,_th06_key_state_ptr" \
+            "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,HEAPU8,HEAP16,HEAPU16" \
+            --embed-file th06_IN.DAT --embed-file th06_ST.DAT \
+            --embed-file th06_ED.DAT --embed-file th06_CM.DAT \
+            --embed-file th06_TL.DAT --embed-file th06_MD.DAT
+
+      - name: Deploy to gh-pages
+        run: |
+          DEPLOY=$(mktemp -d)
+          mkdir -p "$DEPLOY/assets/audio"
+          cp src/web/index.html "$DEPLOY/"
+          cp build/cmake/th06.js "$DEPLOY/"
+          cp build/cmake/th06.wasm "$DEPLOY/"
+          cp assets/audio/*.ogg "$DEPLOY/assets/audio/"
+          cp assets/th06font.ttf "$DEPLOY/"
+          cd "$DEPLOY"
+          git init -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Deploy $(date -u +%Y%m%d-%H%M%S)"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -f origin gh-pages

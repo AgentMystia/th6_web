@@ -1,0 +1,8 @@
+build/
+reference/
+*.log
+.DS_Store
+Thumbs.db
+.codex
+.idea/
+.vscode/

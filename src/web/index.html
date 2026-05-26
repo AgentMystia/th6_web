@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>東方紅魔郷 ~ the Embodiment of Scarlet Devil (WASM)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      #wrap { display: flex; align-items: center; justify-content: center; height: 100%; }
+      /* 640x480 4:3, integer-friendly upscale; nearest keeps the pixel look. */
+      #canvas { image-rendering: pixelated; background: #000; width: 640px; height: 480px; }
+      #status { position: fixed; left: 8px; top: 8px; color: #6f6; font: 12px monospace; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><canvas id="canvas" width="640" height="480" tabindex="0"></canvas></div>
+    <div id="status">booting… (title animation takes ~15s, please wait)</div>
+    <script>
+      // --- Browser keyboard -> DirectInput scancode table (DIK_*) ---
+      // The engine reads g_Th06KeyState[256] (DIK-indexed, 0x80 = pressed) via the
+      // DirectInput GetDeviceState path. Map the keys TH06 actually uses.
+      const DIK = {
+        Escape: 0x01, Digit1: 0x02, KeyQ: 0x10, KeyS: 0x1f, Enter: 0x1c,
+        ControlLeft: 0x1d, ControlRight: 0x9d, ShiftLeft: 0x2a, ShiftRight: 0x36,
+        KeyZ: 0x2c, KeyX: 0x2d, Home: 0xc7,
+        ArrowUp: 0xc8, ArrowLeft: 0xcb, ArrowRight: 0xcd, ArrowDown: 0xd0,
+        Numpad1: 0x4f, Numpad2: 0x50, Numpad3: 0x51, Numpad4: 0x4b,
+        Numpad6: 0x4d, Numpad7: 0x47, Numpad8: 0x48, Numpad9: 0x49,
+      };
+
+      const statusEl = document.getElementById('status');
+      function setStatus(t) { statusEl.textContent = t; }
+
+      var Module = {
+        canvas: document.getElementById('canvas'),
+        print: (t) => console.log('[stdout] ' + t),
+        printErr: (t) => console.log('[stderr] ' + t),
+        onAbort: (w) => console.log('[abort] ' + w),
+        onRuntimeInitialized: async function () {
+          try {
+            // Load Japanese font for GDI text rendering (spellcard names, dialogue)
+            try {
+              var jf = new FontFace('TH06Font', "url(th06font.ttf)");
+              var loaded = await jf.load();
+              document.fonts.add(loaded);
+            } catch(e) { console.log('[boot] font load skipped: ' + e); }
+            // If DATs are not embedded in WASM, try fetching from server.
+            const dats = ['th06_IN.DAT', 'th06_ST.DAT', 'th06_ED.DAT', 'th06_CM.DAT', 'th06_TL.DAT', 'th06_MD.DAT'];
+            const embedded = Module.FS.analyzePath(dats[0]).exists || Module.FS.analyzePath('/' + dats[0]).exists;
+            if (!embedded) {
+              setStatus('downloading assets…');
+              try {
+                for (const d of dats) {
+                  const r = await fetch(d);
+                  if (!r.ok) throw new Error(r.status);
+                  Module.FS.writeFile(d, new Uint8Array(await r.arrayBuffer()));
+                }
+              } catch(e) {
+                setStatus('error: DAT assets not found. Provide th06_*.DAT files.');
+                console.log('[boot] DAT fetch failed: ' + e);
+                return;
+              }
+            }
+            setStatus('init…');
+            console.log('[boot] DATs embedded=' + embedded + ', calling th06_init...');
+            const rc = Module.ccall('th06_init', 'number', [], []);
+            console.log('[boot] th06_init returned ' + rc);
+            if (rc !== 0) { setStatus('init failed rc=' + rc); return; }
+            setStatus('starting…');
+            // Feed keyboard into the engine's DirectInput state buffer.
+            const keyAddr = Module._th06_key_state_ptr ? Module._th06_key_state_ptr() : 0;
+            function setKey(e, down) {
+              const dik = DIK[e.code];
+              if (dik === undefined) return;
+              e.preventDefault();
+              if (keyAddr) Module.HEAPU8[keyAddr + dik] = down ? 0x80 : 0x00;
+            }
+            // Unlock Web Audio on first user interaction (browser autoplay policy).
+            function unlockAudio() {
+              if (Module._sfxCtx && Module._sfxCtx.state === 'suspended') Module._sfxCtx.resume();
+              if (Module._bgmAudio && Module._bgmAudio.paused && Module._bgmAudio.src) Module._bgmAudio.play().catch(function(){});
+            }
+            window.addEventListener('keydown', (e) => { unlockAudio(); setKey(e, true); }, { passive: false });
+            window.addEventListener('keyup', (e) => setKey(e, false), { passive: false });
+            document.addEventListener('click', unlockAudio, { once: true });
+            Module.canvas.focus();
+            setStatus('running');
+            Module.ccall('th06_run', null, [], []);
+          } catch (err) {
+            console.log('[boot] ERROR ' + (err && err.stack || err));
+            setStatus('error: ' + err);
+          }
+        },
+      };
+    </script>
+    <script src="th06.js?v=2"></script>
+  </body>
+</html>
