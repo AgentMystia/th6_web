@@ -1,0 +1,56 @@
+name: Build WASM & Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.61
+
+      - name: Configure
+        run: emcmake cmake -S . -B build/cmake
+
+      - name: Build
+        run: cmake --build build/cmake -j$(nproc)
+
+      - name: Prepare site
+        run: |
+          mkdir -p _site/assets/audio
+          cp src/web/index.html _site/
+          cp build/cmake/th06.js _site/
+          cp build/cmake/th06.wasm _site/
+          cp assets/audio/*.ogg _site/assets/audio/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
