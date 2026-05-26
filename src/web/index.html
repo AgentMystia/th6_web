@@ -38,12 +38,15 @@
         onAbort: (w) => console.log('[abort] ' + w),
         onRuntimeInitialized: async function () {
           try {
-            setStatus('downloading assets…');
+            // If DATs are not embedded in WASM, fetch them from the server.
             const dats = ['th06_IN.DAT', 'th06_ST.DAT', 'th06_ED.DAT', 'th06_CM.DAT', 'th06_TL.DAT', 'th06_MD.DAT'];
-            for (const d of dats) {
-              const r = await fetch(d);
-              if (!r.ok) throw new Error('fetch ' + d + ' -> ' + r.status);
-              Module.FS.writeFile(d, new Uint8Array(await r.arrayBuffer()));
+            if (!Module.FS.analyzePath(dats[0]).exists) {
+              setStatus('downloading assets…');
+              for (const d of dats) {
+                const r = await fetch(d);
+                if (!r.ok) throw new Error('fetch ' + d + ' -> ' + r.status);
+                Module.FS.writeFile(d, new Uint8Array(await r.arrayBuffer()));
+              }
             }
             setStatus('init…');
             const rc = Module.ccall('th06_init', 'number', [], []);
@@ -57,8 +60,14 @@
               e.preventDefault();
               if (keyAddr) Module.HEAPU8[keyAddr + dik] = down ? 0x80 : 0x00;
             }
-            window.addEventListener('keydown', (e) => setKey(e, true), { passive: false });
+            // Unlock Web Audio on first user interaction (browser autoplay policy).
+            function unlockAudio() {
+              if (Module._sfxCtx && Module._sfxCtx.state === 'suspended') Module._sfxCtx.resume();
+              if (Module._bgmAudio && Module._bgmAudio.paused && Module._bgmAudio.src) Module._bgmAudio.play().catch(function(){});
+            }
+            window.addEventListener('keydown', (e) => { unlockAudio(); setKey(e, true); }, { passive: false });
             window.addEventListener('keyup', (e) => setKey(e, false), { passive: false });
+            document.addEventListener('click', unlockAudio, { once: true });
             Module.canvas.focus();
             setStatus('running');
             Module.ccall('th06_run', null, [], []);

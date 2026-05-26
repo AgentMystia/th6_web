@@ -1,4 +1,7 @@
 #include "Supervisor.hpp"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
 #include "Chain.hpp"
@@ -750,26 +753,70 @@ ZunResult Supervisor::LoadConfig(char *path)
     return ZUN_SUCCESS;
 }
 
+#ifdef __EMSCRIPTEN__
+static char g_pendingBgmPaths[4][256];
+
+EM_JS(void, webPlayBgm, (const char *path), {
+    var p = UTF8ToString(path);
+    var fn = p.replace(/\\/g, '/').split('/').pop();
+    p = 'assets/audio/' + fn;
+    if (!Module._bgmAudio) Module._bgmAudio = new Audio();
+    var a = Module._bgmAudio;
+    a.pause(); a.src = p; a.loop = true; a.currentTime = 0; a.volume = 1;
+    a.play().catch(function(){});
+});
+EM_JS(void, webStopBgm, (), {
+    if (Module._bgmAudio) { Module._bgmAudio.pause(); Module._bgmAudio.currentTime = 0; }
+});
+EM_JS(void, webFadeOutBgm, (float seconds), {
+    var a = Module._bgmAudio; if (!a) return;
+    if (Module._bgmFadeIv) clearInterval(Module._bgmFadeIv);
+    var vol = a.volume, step = vol / (seconds * 20);
+    Module._bgmFadeIv = setInterval(function() {
+        a.volume = Math.max(0, a.volume - step);
+        if (a.volume <= 0) { clearInterval(Module._bgmFadeIv); Module._bgmFadeIv = 0; a.pause(); a.volume = 1; }
+    }, 50);
+});
+
+static void midPathToOgg(const char *midPath, char *oggPath, int sz)
+{
+    strncpy(oggPath, midPath, sz - 1);
+    oggPath[sz - 1] = 0;
+    char *ext = strrchr(oggPath, '.');
+    if (ext && (ext - oggPath) + 5 <= sz)
+    {
+        strcpy(ext, ".ogg");
+    }
+}
+#endif
+
 ZunBool Supervisor::ReadMidiFile(u32 midiFileIdx, char *path)
 {
-    // Return conventions seem opposite of normal? But they're never used anyway
+#ifdef __EMSCRIPTEN__
+    if (midiFileIdx < 4 && path)
+        midPathToOgg(path, g_pendingBgmPaths[midiFileIdx], 256);
+    return FALSE;
+#else
     if (g_Supervisor.cfg.musicMode == MIDI)
     {
         if (g_Supervisor.midiOutput != NULL)
         {
             g_Supervisor.midiOutput->ReadFileData(midiFileIdx, path);
         }
-
         return FALSE;
     }
-
     return TRUE;
+#endif
 }
 
 i32 Supervisor::PlayMidiFile(i32 midiFileIdx)
 {
+#ifdef __EMSCRIPTEN__
+    if (midiFileIdx >= 0 && midiFileIdx < 4 && g_pendingBgmPaths[midiFileIdx][0])
+        webPlayBgm(g_pendingBgmPaths[midiFileIdx]);
+    return FALSE;
+#else
     MidiOutput *globalMidiController;
-
     if (g_Supervisor.cfg.musicMode == MIDI)
     {
         if (g_Supervisor.midiOutput != NULL)
@@ -779,11 +826,10 @@ i32 Supervisor::PlayMidiFile(i32 midiFileIdx)
             globalMidiController->ParseFile(midiFileIdx);
             globalMidiController->Play();
         }
-
         return FALSE;
     }
-
     return TRUE;
+#endif
 }
 
 ZunResult Supervisor::SetupMidiPlayback(char *path)
@@ -809,6 +855,12 @@ success:
 
 ZunResult Supervisor::PlayAudio(char *path)
 {
+#ifdef __EMSCRIPTEN__
+    char oggPath[256];
+    midPathToOgg(path, oggPath, sizeof(oggPath));
+    webPlayBgm(oggPath);
+    return ZUN_SUCCESS;
+#else
     char wavName[256];
     char wavPos[256];
     char *pathExtension;
@@ -850,10 +902,15 @@ ZunResult Supervisor::PlayAudio(char *path)
         return ZUN_ERROR;
     }
     return ZUN_SUCCESS;
+#endif
 }
 
 ZunResult Supervisor::StopAudio()
 {
+#ifdef __EMSCRIPTEN__
+    webStopBgm();
+    return ZUN_SUCCESS;
+#endif
     if (g_Supervisor.cfg.musicMode == MIDI)
     {
         if (g_Supervisor.midiOutput != NULL)
@@ -878,6 +935,10 @@ ZunResult Supervisor::StopAudio()
 
 ZunResult Supervisor::FadeOutMusic(f32 fadeOutSeconds)
 {
+#ifdef __EMSCRIPTEN__
+    webFadeOutBgm(fadeOutSeconds);
+    return ZUN_SUCCESS;
+#endif
     if (g_Supervisor.cfg.musicMode == MIDI)
     {
         if (g_Supervisor.midiOutput != NULL)

@@ -7,8 +7,10 @@
 // GDI-style font (ID3DXFont), the WAV mmio reader, and MIDI-out (unused; BGM
 // uses external Ogg). Also defines the DirectInput/DirectSound GUIDs + data
 // formats (their extern decls come from dinput.h/dsound.h).
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <emscripten.h>
 
 #include <d3dx8.h>
 #include <dinput.h>
@@ -34,31 +36,111 @@ namespace
         return refcountField;                                                                                          \
     }
 
-// --- DirectSound stubs ---
+// --- DirectSound → Web Audio ---
+EM_JS(int, playSfxWebAudio, (int ptr, int len, int rate, int nch, int bps, float vol, int loop), {
+    if (!Module._sfxCtx) Module._sfxCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var c = Module._sfxCtx;
+    var smp = len / (nch * (bps >> 3));
+    if (smp <= 0) return 0;
+    var ab = c.createBuffer(nch, smp, rate);
+    for (var ch = 0; ch < nch; ch++) {
+        var d = ab.getChannelData(ch);
+        if (bps === 16) { for (var i = 0; i < smp; i++) d[i] = Module.HEAP16[(ptr >> 1) + i * nch + ch] / 32768.0; }
+        else { for (var i = 0; i < smp; i++) d[i] = (Module.HEAPU8[ptr + i * nch + ch] - 128) / 128.0; }
+    }
+    var s = c.createBufferSource(); s.buffer = ab; s.loop = !!loop;
+    var g = c.createGain(); g.gain.value = vol;
+    s.connect(g).connect(c.destination); s.start();
+    if (!Module._sfxSources) Module._sfxSources = {};
+    var id = (Module._sfxNextId = (Module._sfxNextId || 0) + 1);
+    Module._sfxSources[id] = s;
+    s.onended = function() { delete Module._sfxSources[id]; };
+    return id;
+});
+EM_JS(void, stopSfxWebAudio, (int id), {
+    if (Module._sfxSources && Module._sfxSources[id]) {
+        try { Module._sfxSources[id].stop(); } catch(e) {}
+        delete Module._sfxSources[id];
+    }
+});
+
+
 struct StubSoundBuffer : IDirectSoundBuffer
 {
     STUB_IUNKNOWN(rc)
+    uint8_t *pcmData = nullptr;
+    DWORD pcmSize = 0;
+    DWORD sampleRate = 22050;
+    WORD channels = 1;
+    WORD bitsPerSample = 16;
+    LONG volume = 0; // hundredths of dB (0 = full, -10000 = silent)
+    int activeSourceId = 0;
+
+    ~StubSoundBuffer() { free(pcmData); }
+
     HRESULT __stdcall GetCaps(void *) override { return DS_OK; }
     HRESULT __stdcall GetCurrentPosition(DWORD *p, DWORD *w) override { if (p) *p = 0; if (w) *w = 0; return DS_OK; }
-    HRESULT __stdcall GetFormat(LPWAVEFORMATEX, DWORD, DWORD *) override { return DS_OK; }
-    HRESULT __stdcall GetVolume(LONG *v) override { if (v) *v = 0; return DS_OK; }
+    HRESULT __stdcall GetFormat(LPWAVEFORMATEX fmt, DWORD sz, DWORD *written) override
+    {
+        if (fmt && sz >= sizeof(WAVEFORMATEX))
+        {
+            fmt->wFormatTag = 1; // PCM
+            fmt->nChannels = channels;
+            fmt->nSamplesPerSec = sampleRate;
+            fmt->wBitsPerSample = bitsPerSample;
+            fmt->nBlockAlign = channels * bitsPerSample / 8;
+            fmt->nAvgBytesPerSec = sampleRate * fmt->nBlockAlign;
+            fmt->cbSize = 0;
+        }
+        if (written) *written = sizeof(WAVEFORMATEX);
+        return DS_OK;
+    }
+    HRESULT __stdcall GetVolume(LONG *v) override { if (v) *v = volume; return DS_OK; }
     HRESULT __stdcall GetStatus(DWORD *s) override { if (s) *s = 0; return DS_OK; }
-    HRESULT __stdcall Initialize(IDirectSound *, const DSBUFFERDESC *) override { return DS_OK; }
+    HRESULT __stdcall Initialize(IDirectSound *, const DSBUFFERDESC *desc) override
+    {
+        if (desc && desc->lpwfxFormat)
+        {
+            sampleRate = desc->lpwfxFormat->nSamplesPerSec;
+            channels = desc->lpwfxFormat->nChannels;
+            bitsPerSample = desc->lpwfxFormat->wBitsPerSample;
+        }
+        return DS_OK;
+    }
     HRESULT __stdcall Lock(DWORD, DWORD bytes, void **p1, DWORD *b1, void **p2, DWORD *b2, DWORD) override
     {
-        static void *scratch = nullptr;
-        scratch = realloc(scratch, bytes ? bytes : 1);
-        if (p1) *p1 = scratch;
+        pcmData = (uint8_t *)realloc(pcmData, bytes ? bytes : 1);
+        pcmSize = bytes;
+        if (p1) *p1 = pcmData;
         if (b1) *b1 = bytes;
         if (p2) *p2 = nullptr;
         if (b2) *b2 = 0;
         return DS_OK;
     }
-    HRESULT __stdcall Play(DWORD, DWORD, DWORD) override { return DS_OK; }
+    HRESULT __stdcall Play(DWORD, DWORD, DWORD flags) override
+    {
+        if (pcmData && pcmSize > 0)
+        {
+            if (activeSourceId) { stopSfxWebAudio(activeSourceId); activeSourceId = 0; }
+            float vol = (volume <= -10000) ? 0.0f : (volume >= 0 ? 1.0f : powf(10.0f, volume / 2000.0f));
+            int looping = (flags & DSBPLAY_LOOPING) ? 1 : 0;
+            activeSourceId = playSfxWebAudio((int)(intptr_t)pcmData, (int)pcmSize,
+                            (int)sampleRate, (int)channels, (int)bitsPerSample, vol, looping);
+        }
+        return DS_OK;
+    }
     HRESULT __stdcall SetCurrentPosition(DWORD) override { return DS_OK; }
-    HRESULT __stdcall SetFormat(const WAVEFORMATEX *) override { return DS_OK; }
-    HRESULT __stdcall SetVolume(LONG) override { return DS_OK; }
-    HRESULT __stdcall Stop() override { return DS_OK; }
+    HRESULT __stdcall SetFormat(const WAVEFORMATEX *fmt) override
+    {
+        if (fmt) { sampleRate = fmt->nSamplesPerSec; channels = fmt->nChannels; bitsPerSample = fmt->wBitsPerSample; }
+        return DS_OK;
+    }
+    HRESULT __stdcall SetVolume(LONG v) override { volume = v; return DS_OK; }
+    HRESULT __stdcall Stop() override
+    {
+        if (activeSourceId) { stopSfxWebAudio(activeSourceId); activeSourceId = 0; }
+        return DS_OK;
+    }
     HRESULT __stdcall Unlock(void *, DWORD, void *, DWORD) override { return DS_OK; }
     HRESULT __stdcall Restore() override { return DS_OK; }
 };
@@ -66,15 +148,39 @@ struct StubSoundBuffer : IDirectSoundBuffer
 struct StubSound : IDirectSound
 {
     STUB_IUNKNOWN(rc)
-    HRESULT __stdcall CreateSoundBuffer(const DSBUFFERDESC *, IDirectSoundBuffer **pp, IUnknown *) override
+    HRESULT __stdcall CreateSoundBuffer(const DSBUFFERDESC *desc, IDirectSoundBuffer **pp, IUnknown *) override
     {
-        if (pp) *pp = new StubSoundBuffer();
+        if (pp)
+        {
+            auto *b = new StubSoundBuffer();
+            if (desc && desc->lpwfxFormat)
+            {
+                b->sampleRate = desc->lpwfxFormat->nSamplesPerSec;
+                b->channels = desc->lpwfxFormat->nChannels;
+                b->bitsPerSample = desc->lpwfxFormat->wBitsPerSample;
+            }
+            *pp = b;
+        }
         return DS_OK;
     }
     HRESULT __stdcall GetCaps(void *) override { return DS_OK; }
-    HRESULT __stdcall DuplicateSoundBuffer(IDirectSoundBuffer *, IDirectSoundBuffer **pp) override
+    HRESULT __stdcall DuplicateSoundBuffer(IDirectSoundBuffer *orig, IDirectSoundBuffer **pp) override
     {
-        if (pp) *pp = new StubSoundBuffer();
+        if (pp)
+        {
+            auto *b = new StubSoundBuffer();
+            auto *src = static_cast<StubSoundBuffer *>(orig);
+            if (src && src->pcmData && src->pcmSize)
+            {
+                b->pcmData = (uint8_t *)malloc(src->pcmSize);
+                memcpy(b->pcmData, src->pcmData, src->pcmSize);
+                b->pcmSize = src->pcmSize;
+                b->sampleRate = src->sampleRate;
+                b->channels = src->channels;
+                b->bitsPerSample = src->bitsPerSample;
+            }
+            *pp = b;
+        }
         return DS_OK;
     }
     HRESULT __stdcall SetCooperativeLevel(HWND, DWORD) override { return DS_OK; }

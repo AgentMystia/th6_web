@@ -150,10 +150,53 @@ extern "C" HLOCAL LocalAlloc(UINT flags, SIZE_T bytes)
 }
 extern "C" HLOCAL LocalFree(HLOCAL m) { free(m); return nullptr; }
 
-// Directory enumeration (MainMenu replay listing) — empty for now.
-extern "C" HANDLE FindFirstFileA(LPCSTR, LPWIN32_FIND_DATAA) { return INVALID_HANDLE_VALUE; }
-extern "C" BOOL FindNextFileA(HANDLE, LPWIN32_FIND_DATAA) { return FALSE; }
-extern "C" BOOL FindClose(HANDLE) { return TRUE; }
+// Directory enumeration (MainMenu replay listing) via POSIX opendir on MEMFS.
+#include <dirent.h>
+#include <fnmatch.h>
+#include <sys/stat.h>
+struct FindCtx { DIR *d; char pattern[MAX_PATH]; char dir[MAX_PATH]; };
+extern "C" HANDLE FindFirstFileA(LPCSTR lpFileName, LPWIN32_FIND_DATAA lpFindData)
+{
+    if (!lpFileName || !lpFindData) return INVALID_HANDLE_VALUE;
+    memset(lpFindData, 0, sizeof(*lpFindData));
+    char dirBuf[MAX_PATH];
+    strncpy(dirBuf, lpFileName, MAX_PATH - 1);
+    dirBuf[MAX_PATH - 1] = 0;
+    char *sep = strrchr(dirBuf, '/');
+    char patBuf[MAX_PATH];
+    if (sep) { strncpy(patBuf, sep + 1, MAX_PATH - 1); *sep = 0; }
+    else { strncpy(patBuf, dirBuf, MAX_PATH - 1); strcpy(dirBuf, "."); }
+    DIR *d = opendir(dirBuf);
+    if (!d) return INVALID_HANDLE_VALUE;
+    auto *ctx = new FindCtx();
+    ctx->d = d;
+    strncpy(ctx->pattern, patBuf, MAX_PATH - 1);
+    strncpy(ctx->dir, dirBuf, MAX_PATH - 1);
+    if (FindNextFileA((HANDLE)ctx, lpFindData)) return (HANDLE)ctx;
+    closedir(d); delete ctx;
+    return INVALID_HANDLE_VALUE;
+}
+extern "C" BOOL FindNextFileA(HANDLE hFind, LPWIN32_FIND_DATAA lpFindData)
+{
+    if (hFind == INVALID_HANDLE_VALUE || !lpFindData) return FALSE;
+    auto *ctx = (FindCtx *)hFind;
+    struct dirent *ent;
+    while ((ent = readdir(ctx->d)) != nullptr)
+    {
+        if (fnmatch(ctx->pattern, ent->d_name, 0) == 0)
+        {
+            memset(lpFindData, 0, sizeof(*lpFindData));
+            strncpy(lpFindData->cFileName, ent->d_name, MAX_PATH - 1);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+extern "C" BOOL FindClose(HANDLE hFind)
+{
+    if (hFind != INVALID_HANDLE_VALUE) { auto *ctx = (FindCtx *)hFind; closedir(ctx->d); delete ctx; }
+    return TRUE;
+}
 
 // ---------------------------------------------------------------------------
 // Window / cursor / system — no-ops on the web (the canvas is the window).
@@ -219,25 +262,126 @@ extern "C" BOOL SetThreadPriority(HANDLE, int) { return TRUE; }
 extern "C" BOOL PostThreadMessageA(DWORD, UINT, WPARAM, LPARAM) { return TRUE; }
 extern "C" DWORD GetCurrentThreadId(void) { return 1; }
 
-// GDI font/text — stubbed (text rendering handled later via atlas/canvas).
-extern "C" HFONT CreateFontA(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCSTR)
+// GDI font/text — minimal implementation using Emscripten OffscreenCanvas for
+// TextOutA. The engine's TextHelper renders spellcard names / dialogue into a
+// DIB bitmap, then blits it onto a D3D texture. We allocate real pixel memory
+// and draw text via a JS OffscreenCanvas so the characters appear.
+
+#include <emscripten.h>
+
+struct GdiBitmap { uint8_t *bits; int w, h, bpp; };
+struct GdiDC {
+    GdiBitmap *bmp;
+    DWORD textColor;
+    int fontH;
+};
+
+extern "C" HFONT CreateFontA(int height, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCSTR)
 {
-    return nullptr;
+    int h = height > 0 ? height : -height;
+    if (h == 0) h = 16;
+    return (HFONT)(intptr_t)h;
 }
-extern "C" HFONT CreateFontIndirectA(const LOGFONTA *) { return nullptr; }
-extern "C" HGDIOBJ SelectObject(HDC, HGDIOBJ) { return nullptr; }
-extern "C" BOOL DeleteObject(HGDIOBJ) { return TRUE; }
-extern "C" HDC CreateCompatibleDC(HDC) { return nullptr; }
-extern "C" BOOL DeleteDC(HDC) { return TRUE; }
-extern "C" HBITMAP CreateDIBSection(HDC, const BITMAPINFO *, UINT, void **bits, HANDLE, DWORD)
+extern "C" HFONT CreateFontIndirectA(const LOGFONTA *lf)
 {
-    if (bits) *bits = nullptr;
-    return nullptr;
+    int h = lf ? (lf->lfHeight > 0 ? lf->lfHeight : -lf->lfHeight) : 16;
+    return (HFONT)(intptr_t)h;
+}
+extern "C" HGDIOBJ SelectObject(HDC hdc, HGDIOBJ obj)
+{
+    GdiDC *dc = (GdiDC *)hdc;
+    if (!dc) return (HGDIOBJ)1;
+    intptr_t v = (intptr_t)obj;
+    if (v > 0 && v < 200) { dc->fontH = (int)v; return (HGDIOBJ)1; }
+    GdiBitmap *bmp = (GdiBitmap *)obj;
+    if (bmp && bmp->bits) { dc->bmp = bmp; }
+    return (HGDIOBJ)1;
+}
+extern "C" BOOL DeleteObject(HGDIOBJ obj)
+{
+    GdiBitmap *bmp = (GdiBitmap *)obj;
+    if (bmp && bmp->bits) { free(bmp->bits); bmp->bits = nullptr; delete bmp; }
+    return TRUE;
+}
+extern "C" HDC CreateCompatibleDC(HDC)
+{
+    GdiDC *dc = new GdiDC();
+    dc->bmp = nullptr;
+    dc->textColor = 0xFFFFFF;
+    dc->fontH = 16;
+    return (HDC)dc;
+}
+extern "C" BOOL DeleteDC(HDC hdc)
+{
+    if (hdc) delete (GdiDC *)hdc;
+    return TRUE;
+}
+extern "C" HBITMAP CreateDIBSection(HDC, const BITMAPINFO *bi, UINT, void **bits, HANDLE, DWORD)
+{
+    if (!bi) { if (bits) *bits = nullptr; return nullptr; }
+    int w = bi->bmiHeader.biWidth;
+    int h = bi->bmiHeader.biHeight < 0 ? -bi->bmiHeader.biHeight : bi->bmiHeader.biHeight;
+    int bpp = bi->bmiHeader.biBitCount / 8;
+    if (bpp < 2) bpp = 2;
+    GdiBitmap *bmp = new GdiBitmap();
+    bmp->w = w; bmp->h = h; bmp->bpp = bpp;
+    bmp->bits = (uint8_t *)calloc(1, (size_t)w * h * bpp);
+    if (bits) *bits = bmp->bits;
+    return (HBITMAP)bmp;
 }
 extern "C" int SetBkMode(HDC, int) { return 0; }
-extern "C" DWORD SetTextColor(HDC, DWORD) { return 0; }
+extern "C" DWORD SetTextColor(HDC hdc, DWORD color)
+{
+    GdiDC *dc = (GdiDC *)hdc;
+    if (dc) dc->textColor = color;
+    return 0;
+}
 extern "C" DWORD SetBkColor(HDC, DWORD) { return 0; }
-extern "C" BOOL TextOutA(HDC, int, int, LPCSTR, int) { return TRUE; }
+
+EM_JS(void, gdiTextOut, (int bufPtr, int bufW, int bufH, int bpp, int x, int y, const char *str, int len, int fontH, unsigned int color), {
+    var text = UTF8ToString(str, len);
+    if (!text || !bufW || !bufH) return;
+    var cvs = new OffscreenCanvas(bufW, bufH);
+    var ctx = cvs.getContext('2d');
+    var r = (color & 0xFF), g = ((color >> 8) & 0xFF), b = ((color >> 16) & 0xFF);
+    ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    ctx.font = 'bold ' + fontH + 'px "MS Gothic", "Yu Gothic", "Noto Sans JP", monospace';
+    ctx.textBaseline = 'top';
+    ctx.fillText(text, x, y);
+    var imgData = ctx.getImageData(0, 0, bufW, bufH).data;
+    // Write RGBA pixels into the native-format DIB buffer.
+    // TextHelper expects the DIB format (typically A1R5G5B5 or A8R8G8B8).
+    if (bpp === 4) {
+        for (var i = 0; i < bufW * bufH; i++) {
+            var a = imgData[i * 4 + 3];
+            if (a === 0) continue;
+            var sr = imgData[i*4], sg = imgData[i*4+1], sb = imgData[i*4+2];
+            Module.HEAPU8[bufPtr + i*4 + 0] = sb;
+            Module.HEAPU8[bufPtr + i*4 + 1] = sg;
+            Module.HEAPU8[bufPtr + i*4 + 2] = sr;
+            Module.HEAPU8[bufPtr + i*4 + 3] = a;
+        }
+    } else if (bpp === 2) {
+        for (var i = 0; i < bufW * bufH; i++) {
+            var a = imgData[i * 4 + 3];
+            if (a === 0) continue;
+            var sr = imgData[i*4] >> 3, sg = imgData[i*4+1] >> 3, sb = imgData[i*4+2] >> 3;
+            var px = (a >= 128 ? 0x8000 : 0) | (sr << 10) | (sg << 5) | sb;
+            Module.HEAPU8[bufPtr + i*2] = px & 0xFF;
+            Module.HEAPU8[bufPtr + i*2 + 1] = (px >> 8) & 0xFF;
+        }
+    }
+});
+
+extern "C" BOOL TextOutA(HDC hdc, int x, int y, LPCSTR str, int len)
+{
+    GdiDC *dc = (GdiDC *)hdc;
+    if (!dc || !dc->bmp || !dc->bmp->bits || !str || len <= 0) return TRUE;
+    gdiTextOut((int)(intptr_t)dc->bmp->bits, dc->bmp->w, dc->bmp->h, dc->bmp->bpp,
+               x, y, str, len, dc->fontH, dc->textColor);
+    return TRUE;
+}
+extern "C" int GetObjectA(HANDLE h, int sz, void *buf) { if (buf) memset(buf, 0, sz); return sz; }
 
 extern "C" UINT_PTR SetTimer(HWND, UINT_PTR, UINT, void *) { return 1; }
 extern "C" BOOL KillTimer(HWND, UINT_PTR) { return TRUE; }

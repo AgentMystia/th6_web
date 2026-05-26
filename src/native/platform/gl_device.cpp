@@ -14,6 +14,9 @@
 #include <cstring>
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgl.h>
+extern "C" {
+#include <jpeglib.h>
+}
 #include <png.h>
 #include <vector>
 
@@ -35,6 +38,7 @@ GLint u_mode, u_viewport, u_viewportOfs, u_mvp, u_useTexture, u_tex, u_tfactor;
 GLint u_colorOp, u_colorArg1, u_colorArg2, u_alphaOp, u_alphaArg1, u_alphaArg2;
 GLint u_alphaTest, u_alphaFunc, u_alphaRef;
 GLint u_mv, u_fogEnable, u_fogColor, u_fogStart, u_fogEnd;
+GLint u_texMatrix, u_texTransform;
 
 const char *kVertexShader = R"(#version 300 es
 precision highp float;
@@ -48,19 +52,22 @@ uniform mat4 uMVP;          // world*view*proj
 uniform mat4 uMV;           // world*view (for fog eye-space Z)
 uniform int uFogEnable;
 uniform float uFogStart, uFogEnd;
+uniform mat4 uTexMatrix;
+uniform int uTexTransform;
 out vec4 vColor;
 out vec2 vUV;
 out float vFogFactor;
 void main(){
   vColor = aColor.bgra;     // D3DCOLOR BGRA in memory -> RGBA
-  vUV = aUV;
   if (uMode == 0) {
+    vUV = aUV;
     float x = ((aPos.x - uViewportOfs.x) / uViewport.x) * 2.0 - 1.0;
     float y = 1.0 - ((aPos.y - uViewportOfs.y) / uViewport.y) * 2.0;
     float z = aPos.z * 2.0 - 1.0;
     gl_Position = vec4(x, y, z, 1.0);
     vFogFactor = 1.0;       // no fog for 2D
   } else {
+    vUV = uTexTransform != 0 ? (uTexMatrix * vec4(aUV, 1.0, 1.0)).xy : aUV;
     gl_Position = uMVP * vec4(aPos.xyz, 1.0);
     if (uFogEnable != 0) {
       float eyeZ = abs((uMV * vec4(aPos.xyz, 1.0)).z);
@@ -176,6 +183,8 @@ void initGlProgram()
     u_fogColor = glGetUniformLocation(g_program, "uFogColor");
     u_fogStart = glGetUniformLocation(g_program, "uFogStart");
     u_fogEnd = glGetUniformLocation(g_program, "uFogEnd");
+    u_texMatrix = glGetUniformLocation(g_program, "uTexMatrix");
+    u_texTransform = glGetUniformLocation(g_program, "uTexTransform");
     glUniform1i(u_tex, 0);
     glGenVertexArrays(1, &g_vao);
     glBindVertexArray(g_vao);
@@ -455,6 +464,48 @@ bool decodePng(const uint8_t *data, size_t size, std::vector<uint8_t> &rgba, int
     return true;
 }
 
+bool decodeJpeg(const uint8_t *data, size_t size, std::vector<uint8_t> &rgba, int &W, int &H)
+{
+    if (size < 2 || data[0] != 0xFF || data[1] != 0xD8)
+        return false;
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, data, (unsigned long)size);
+    if (jpeg_read_header(&cinfo, (boolean)1) != JPEG_HEADER_OK)
+    {
+        jpeg_destroy_decompress(&cinfo);
+        return false;
+    }
+    cinfo.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&cinfo);
+    W = cinfo.output_width;
+    H = cinfo.output_height;
+    rgba.assign((size_t)W * H * 4, 0xFF);
+    std::vector<uint8_t> row((size_t)W * 3);
+    for (int y = 0; y < H; y++)
+    {
+        JSAMPROW rp = row.data();
+        jpeg_read_scanlines(&cinfo, &rp, 1);
+        uint8_t *dst = rgba.data() + (size_t)y * W * 4;
+        for (int x = 0; x < W; x++)
+        {
+            dst[x * 4 + 0] = row[x * 3 + 0];
+            dst[x * 4 + 1] = row[x * 3 + 1];
+            dst[x * 4 + 2] = row[x * 3 + 2];
+        }
+    }
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    return true;
+}
+
+bool decodeImage(const uint8_t *data, size_t size, std::vector<uint8_t> &rgba, int &W, int &H)
+{
+    return decodePng(data, size, rgba, W, H) || decodeJpeg(data, size, rgba, W, H);
+}
+
 void applyColorKey(std::vector<uint8_t> &rgba, D3DCOLOR colorKey)
 {
     if (colorKey == 0) return;
@@ -503,7 +554,7 @@ struct GLDevice : IDirect3DDevice8
     ULONG rc = 1;
     DWORD fvf = 0;
     GLTexture *boundTex = nullptr;
-    D3DXMATRIX world, view, proj;
+    D3DXMATRIX world, view, proj, texMatrix;
     D3DVIEWPORT8 vp{0, 0, 640, 480, 0, 1};
     // render/stage state cache
     DWORD rs[256] = {0};
@@ -514,6 +565,7 @@ struct GLDevice : IDirect3DDevice8
         D3DXMatrixIdentity(&world);
         D3DXMatrixIdentity(&view);
         D3DXMatrixIdentity(&proj);
+        D3DXMatrixIdentity(&texMatrix);
         rs[D3DRS_SRCBLEND] = D3DBLEND_SRCALPHA;
         rs[D3DRS_DESTBLEND] = D3DBLEND_INVSRCALPHA;
         rs[D3DRS_ALPHAFUNC] = D3DCMP_GREATEREQUAL;
@@ -585,8 +637,39 @@ struct GLDevice : IDirect3DDevice8
         if (pp) *pp = (new GLTexture(w ? w : 1, h ? h : 1, f == D3DFMT_UNKNOWN ? D3DFMT_A8R8G8B8 : f))->surf;
         return D3D_OK;
     }
-    HRESULT __stdcall CopyRects(IDirect3DSurface8 *, const RECT *, UINT, IDirect3DSurface8 *, const POINT *) override
+    HRESULT __stdcall CopyRects(IDirect3DSurface8 *srcSurf, const RECT *srcRects, UINT numRects,
+                                IDirect3DSurface8 *, const POINT *dstPts) override
     {
+        if (!srcSurf || !numRects) return D3D_OK;
+        GLSurface *src = static_cast<GLSurface *>(srcSurf);
+        if (!src->owner || !src->owner->tex) return D3D_OK;
+        float sx = dstPts ? (float)dstPts->x : 0.0f;
+        float sy = dstPts ? (float)dstPts->y : 0.0f;
+        float sw = srcRects ? (float)(srcRects->right - srcRects->left) : (float)src->w;
+        float sh = srcRects ? (float)(srcRects->bottom - srcRects->top) : (float)src->h;
+        float u0 = srcRects ? (float)srcRects->left / src->w : 0.0f;
+        float v0 = srcRects ? (float)srcRects->top / src->h : 0.0f;
+        float u1 = srcRects ? (float)srcRects->right / src->w : 1.0f;
+        float v1 = srcRects ? (float)srcRects->bottom / src->h : 1.0f;
+        float verts[] = {
+            sx,      sy,      0, 1, u0, v0,
+            sx + sw, sy,      0, 1, u1, v0,
+            sx,      sy + sh, 0, 1, u0, v1,
+            sx + sw, sy + sh, 0, 1, u1, v1,
+        };
+        GLTexture *prevTex = boundTex;
+        DWORD prevFvf = fvf;
+        boundTex = src->owner;
+        fvf = D3DFVF_XYZRHW | D3DFVF_TEX1;
+        DWORD prevBlend = rs[D3DRS_ALPHABLENDENABLE];
+        DWORD prevATest = rs[D3DRS_ALPHATESTENABLE];
+        rs[D3DRS_ALPHABLENDENABLE] = 0;
+        rs[D3DRS_ALPHATESTENABLE] = 0;
+        drawArrays(D3DPT_TRIANGLESTRIP, 2, verts, 24);
+        rs[D3DRS_ALPHABLENDENABLE] = prevBlend;
+        rs[D3DRS_ALPHATESTENABLE] = prevATest;
+        boundTex = prevTex;
+        fvf = prevFvf;
         return D3D_OK;
     }
     HRESULT __stdcall SetViewport(const D3DVIEWPORT8 *v) override
@@ -601,6 +684,7 @@ struct GLDevice : IDirect3DDevice8
         if (s == D3DTS_WORLD) world = *m;
         else if (s == D3DTS_VIEW) view = *m;
         else if (s == D3DTS_PROJECTION) proj = *m;
+        else if (s == D3DTS_TEXTURE0) texMatrix = *m;
         return D3D_OK;
     }
     HRESULT __stdcall SetRenderState(D3DRENDERSTATETYPE s, DWORD v) override { if (s < 256) rs[s] = v; return D3D_OK; }
@@ -728,6 +812,14 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
         D3DXMatrixMultiply(&mvp, &wv, &proj);
         glUniformMatrix4fv(u_mvp, 1, GL_TRUE, &mvp._11);
         glUniformMatrix4fv(u_mv, 1, GL_TRUE, &wv._11);
+        int ttf = (int)tss0[D3DTSS_TEXTURETRANSFORMFLAGS];
+        glUniform1i(u_texTransform, ttf);
+        if (ttf)
+            glUniformMatrix4fv(u_texMatrix, 1, GL_TRUE, &texMatrix._11);
+    }
+    else
+    {
+        glUniform1i(u_texTransform, 0);
     }
     // Fog (3D only; D3DRS_FOGSTART/FOGEND are float bits stored as DWORD)
     bool fogOn = !xyzrhw && rs[D3DRS_FOGENABLE];
@@ -861,20 +953,18 @@ extern "C" HRESULT D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice8 *, const
 {
     std::vector<uint8_t> rgba;
     int W = 0, H = 0;
-    if (!decodePng((const uint8_t *)src, srcSize, rgba, W, H))
+    if (!decodeImage((const uint8_t *)src, srcSize, rgba, W, H))
     {
-        fprintf(stderr, "[gl] D3DXCreateTextureFromFileInMemoryEx: PNG decode failed\n");
+        fprintf(stderr, "[gl] D3DXCreateTextureFromFileInMemoryEx: decode failed (size=%u, hdr=%02X%02X)\n",
+                srcSize, srcSize > 0 ? ((const uint8_t*)src)[0] : 0, srcSize > 1 ? ((const uint8_t*)src)[1] : 0);
         if (pp) *pp = new GLTexture(8, 8, D3DFMT_A8R8G8B8);
         return S_OK;
     }
-    // When a colorKey is specified, D3D8 ignores the PNG's own transparency (tRNS)
-    // and uses the colorKey exclusively. Force all alpha to 255 first, then apply colorKey.
-    // When no colorKey (ck=0), the PNG's tRNS alpha is the intended transparency source.
-    if (colorKey != 0)
-    {
-        for (size_t i = 3; i < rgba.size(); i += 4)
-            rgba[i] = 255;
-    }
+    // TH06 textures: force alpha=255, then carve transparency via colorKey only.
+    // PNG tRNS is intentionally discarded — TH06's palette PNGs have unreliable
+    // tRNS data that causes sprites to be invisible if preserved.
+    for (size_t i = 3; i < rgba.size(); i += 4)
+        rgba[i] = 255;
     applyColorKey(rgba, colorKey);
     D3DFORMAT useFmt = (fmt == D3DFMT_UNKNOWN) ? D3DFMT_A8R8G8B8 : fmt;
     GLTexture *t = new GLTexture(W, H, useFmt);
@@ -902,9 +992,32 @@ extern "C" HRESULT D3DXLoadSurfaceFromSurface(IDirect3DSurface8 *dst, const PALE
                                               D3DCOLOR)
 {
     GLSurface *d = static_cast<GLSurface *>(dst), *s = static_cast<GLSurface *>(srcS);
-    if (d && s && d->owner && s->owner && d->w == s->w && d->h == s->h && d->fmt == s->fmt)
+    if (d && s && d->owner && s->owner)
     {
-        d->owner->shadow = s->owner->shadow;
+        UINT cw = d->w < s->w ? d->w : s->w;
+        UINT ch = d->h < s->h ? d->h : s->h;
+        if (d->w == s->w && d->h == s->h && d->fmt == s->fmt)
+        {
+            d->owner->shadow = s->owner->shadow;
+        }
+        else
+        {
+            int dbpp = d->owner->bpp, sbpp = s->owner->bpp;
+            for (UINT y = 0; y < ch; y++)
+            {
+                uint8_t *dr = d->owner->shadow.data() + (size_t)y * d->w * dbpp;
+                const uint8_t *sr = s->owner->shadow.data() + (size_t)y * s->w * sbpp;
+                if (dbpp == sbpp)
+                    memcpy(dr, sr, (size_t)cw * dbpp);
+                else
+                    for (UINT x = 0; x < cw; x++)
+                    {
+                        uint8_t rgba[4];
+                        nativeToRGBA8(s->fmt, sr + (size_t)x * sbpp, rgba, 1);
+                        rgba8ToNative(d->fmt, rgba, dr + (size_t)x * dbpp, 1);
+                    }
+            }
+        }
         d->owner->upload();
     }
     return S_OK;
@@ -917,7 +1030,7 @@ extern "C" HRESULT D3DXLoadSurfaceFromFileInMemory(IDirect3DSurface8 *dst, const
     GLSurface *d = static_cast<GLSurface *>(dst);
     std::vector<uint8_t> rgba;
     int W = 0, H = 0;
-    if (d && d->owner && decodePng((const uint8_t *)src, srcSize, rgba, W, H))
+    if (d && d->owner && decodeImage((const uint8_t *)src, srcSize, rgba, W, H))
     {
         applyColorKey(rgba, ck);
         for (int y = 0; y < H && y < (int)d->h; y++)

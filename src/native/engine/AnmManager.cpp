@@ -1,6 +1,7 @@
 #include "AnmManager.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
+#include "GameManager.hpp"
 #include "Rng.hpp"
 #include "Supervisor.hpp"
 #include "TextHelper.hpp"
@@ -669,12 +670,6 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm)
     float fVar2;
     float fVar3;
 
-    // WASM port: force VM visible. On Emscripten/wasm32, the ANM script's
-    // SetActiveSprite instruction (which sets isVisible=1) doesn't execute at
-    // time=0 — likely due to AnmRawInstr struct alignment differing from MSVC.
-    // Without this, enemies/bullets/effects with isVisible=0 are invisible.
-    // TODO: fix the ANM instruction struct alignment to match the original binary.
-    vm->flags.isVisible = 1;
     if (vm->flags.isVisible == 0)
     {
         return ZUN_ERROR;
@@ -745,9 +740,6 @@ ZunResult AnmManager::Draw(AnmVm *vm)
     {
         return this->DrawNoRotation(vm);
     }
-#ifdef TH06_FORCE_VISIBLE
-    vm->flags.isVisible = 1;
-#endif
     if (vm->flags.isVisible == 0)
     {
         return ZUN_ERROR;
@@ -843,7 +835,6 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 {
     D3DXMATRIX worldTransformMatrix;
     D3DXMATRIX rotationMatrix;
-    D3DXMATRIX textureMatrix;
     f32 scaledXCenter;
     f32 scaledYCenter;
 
@@ -904,51 +895,57 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
     worldTransformMatrix.m[3][2] = vm->pos.z;
 
-    // Now, set transform matrix.
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_WORLD, &worldTransformMatrix);
-
-    // Load sprite if vm->sprite is not the same as current sprite.
-    if (this->currentSprite != vm->sprite)
+    // WASM 2D projection: project the 4 quad corners to screen space,
+    // then draw as a pretransformed (XYZRHW) textured quad with direct UVs.
+    // Clip to game region so 3D background doesn't cover the sidebar UI.
+    D3DXVECTOR3 corners[4] = {
+        {-128, -128, 0}, {128, -128, 0},
+        {-128,  128, 0}, {128,  128, 0}
+    };
+    VertexTex1DiffuseXyzrwh verts[4];
+    for (int i = 0; i < 4; i++)
     {
-        this->currentSprite = vm->sprite;
-        textureMatrix = vm->matrix;
-        textureMatrix.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
-        textureMatrix.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
-        g_Supervisor.d3dDevice->SetTransform(D3DTS_TEXTURE0, &textureMatrix);
-        if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
-        {
-            this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
-            g_Supervisor.d3dDevice->SetTexture(0, this->currentTexture);
-        }
+        D3DXVECTOR3 s;
+        D3DXVec3Project(&s, &corners[i], &g_Supervisor.viewport,
+                        &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
+                        &worldTransformMatrix);
+        verts[i].position = {s.x, s.y, s.z, 1.0f};
+        verts[i].diffuse = vm->color;
     }
-
-    // Set vertex shader to TEX1 | XYZ
-    if (this->currentVertexShader != 3)
     {
-        if ((g_Supervisor.cfg.opts >> GCOS_DONT_USE_VERTEX_BUF & 1) == 0)
+        float minX = verts[0].position.x, maxX = verts[0].position.x;
+        float minY = verts[0].position.y, maxY = verts[0].position.y;
+        for (int i = 1; i < 4; i++)
         {
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_XYZ);
-            g_Supervisor.d3dDevice->SetStreamSource(0, this->vertexBuffer, 0x14);
+            if (verts[i].position.x < minX) minX = verts[i].position.x;
+            if (verts[i].position.x > maxX) maxX = verts[i].position.x;
+            if (verts[i].position.y < minY) minY = verts[i].position.y;
+            if (verts[i].position.y > maxY) maxY = verts[i].position.y;
         }
-        else
-        {
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZ);
-        }
-        this->currentVertexShader = 3;
+        if (maxX < (float)GAME_REGION_LEFT || minX > (float)GAME_REGION_RIGHT ||
+            maxY < (float)GAME_REGION_TOP || minY > (float)GAME_REGION_BOTTOM)
+            return ZUN_SUCCESS;
     }
+    verts[0].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
+    verts[1].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
+    verts[2].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+    verts[3].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
 
-    // Reset the render state based on the settings fo the given VM.
+    if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
+    {
+        this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
+        g_Supervisor.d3dDevice->SetTexture(0, this->currentTexture);
+    }
+    this->currentSprite = vm->sprite;
+
+    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
+    this->currentVertexShader = 2;
     this->SetRenderStateForVm(vm);
-
-    // Draw the VM.
-    if ((g_Supervisor.cfg.opts >> GCOS_DONT_USE_VERTEX_BUF & 1) == 0)
-    {
-        g_Supervisor.d3dDevice->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, g_PrimitivesToDrawUnknown, 0x18);
-    }
+    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(VertexTex1DiffuseXyzrwh));
     return ZUN_SUCCESS;
 }
 
@@ -959,9 +956,6 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     D3DXMATRIX unusedMatrix;
     D3DXMATRIX textureMatrix;
 
-#ifdef TH06_FORCE_VISIBLE
-    vm->flags.isVisible = 1;
-#endif
     if (!vm->flags.isVisible)
     {
         return ZUN_ERROR;
@@ -981,6 +975,7 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
         return ZUN_ERROR;
     }
 
+    // WASM 2D projection: project quad center to screen, build XYZRHW vertices.
     worldTransformMatrix = vm->matrix;
     worldTransformMatrix.m[3][0] = rintf(vm->pos.x) - 0.5f;
     worldTransformMatrix.m[3][1] = -rintf(vm->pos.y) + 0.5f;
@@ -995,43 +990,55 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     worldTransformMatrix.m[3][2] = vm->pos.z;
     worldTransformMatrix.m[0][0] *= vm->scaleX;
     worldTransformMatrix.m[1][1] *= -vm->scaleY;
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_WORLD, &worldTransformMatrix);
 
-    if (this->currentSprite != vm->sprite)
+    D3DXVECTOR3 corners[4] = {
+        {-128, -128, 0}, {128, -128, 0},
+        {-128,  128, 0}, {128,  128, 0}
+    };
+    VertexTex1DiffuseXyzrwh verts[4];
+    for (int i = 0; i < 4; i++)
     {
-        this->currentSprite = vm->sprite;
-        textureMatrix = vm->matrix;
-        textureMatrix.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
-        textureMatrix.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
-        g_Supervisor.d3dDevice->SetTransform(D3DTS_TEXTURE0, &textureMatrix);
-        if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
-        {
-            this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
-            g_Supervisor.d3dDevice->SetTexture(0, this->currentTexture);
-        }
-        if (this->currentVertexShader != 3)
-        {
-            if ((g_Supervisor.cfg.opts >> GCOS_DONT_USE_VERTEX_BUF & 1) == 0)
-            {
-                g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_XYZ);
-                g_Supervisor.d3dDevice->SetStreamSource(0, this->vertexBuffer, 0x14);
-            }
-            else
-            {
-                g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZ);
-            }
-            this->currentVertexShader = 3;
-        }
+        D3DXVECTOR3 s;
+        D3DXVec3Project(&s, &corners[i], &g_Supervisor.viewport,
+                        &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
+                        &worldTransformMatrix);
+        verts[i].position = {s.x, s.y, s.z, 1.0f};
+        verts[i].diffuse = vm->color;
     }
+    {
+        float minX = verts[0].position.x, maxX = verts[0].position.x;
+        float minY = verts[0].position.y, maxY = verts[0].position.y;
+        for (int i = 1; i < 4; i++)
+        {
+            if (verts[i].position.x < minX) minX = verts[i].position.x;
+            if (verts[i].position.x > maxX) maxX = verts[i].position.x;
+            if (verts[i].position.y < minY) minY = verts[i].position.y;
+            if (verts[i].position.y > maxY) maxY = verts[i].position.y;
+        }
+        if (maxX < (float)GAME_REGION_LEFT || minX > (float)GAME_REGION_RIGHT ||
+            maxY < (float)GAME_REGION_TOP || minY > (float)GAME_REGION_BOTTOM)
+            return ZUN_SUCCESS;
+    }
+    verts[0].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
+    verts[1].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
+    verts[2].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+    verts[3].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+
+    if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
+    {
+        this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
+        g_Supervisor.d3dDevice->SetTexture(0, this->currentTexture);
+    }
+    this->currentSprite = vm->sprite;
+
+    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
+    this->currentVertexShader = 2;
     this->SetRenderStateForVm(vm);
-    if ((g_Supervisor.cfg.opts >> GCOS_DONT_USE_VERTEX_BUF & 1) == 0)
-    {
-        g_Supervisor.d3dDevice->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, g_PrimitivesToDrawUnknown, 0x18);
-    }
+    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(VertexTex1DiffuseXyzrwh));
     return ZUN_SUCCESS;
 }
 

@@ -8,6 +8,7 @@
 #include "ZunResult.hpp"
 #include "ZunTimer.hpp"
 #include "diffbuild.hpp"
+#include <cstddef>
 #include "inttypes.hpp"
 
 namespace th06
@@ -67,6 +68,8 @@ struct AnmRawInstr
     u8 argsCount;
     u32 args[10];
 };
+static_assert(sizeof(AnmRawInstr) == 44, "AnmRawInstr size mismatch");
+static_assert(offsetof(AnmRawInstr, args) == 4, "AnmRawInstr::args offset mismatch");
 
 enum AnmVmFlagsEnum
 {
@@ -204,4 +207,5 @@ struct AnmVm
     // Two final padding bytes
 };
 ZUN_ASSERT_SIZE(AnmVm, 0x110);
+static_assert(sizeof(AnmVm) == 0x110, "AnmVm size mismatch with original binary");
 }; // namespace th06

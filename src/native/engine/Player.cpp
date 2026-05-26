@@ -615,6 +615,26 @@ ChainCallbackResult Player::OnDrawHighPrio(Player *p)
             g_AnmManager->Draw(&p->orbsSprite[0]);
             g_AnmManager->Draw(&p->orbsSprite[1]);
         }
+        // Dynamic hitbox indicator: small red translucent diamond at the player's
+        // collision center, matching the behaviour of the d3d8.dll hitbox patch.
+        if (p->playerState == PLAYER_STATE_ALIVE || p->playerState == PLAYER_STATE_INVULNERABLE)
+        {
+            f32 cx = g_GameManager.arcadeRegionTopLeftPos.x + p->positionCenter.x;
+            f32 cy = g_GameManager.arcadeRegionTopLeftPos.y + p->positionCenter.y;
+            f32 r = 2.0f;
+            VertexDiffuseXyzrwh hv[4] = {
+                {{cx,     cy - r, 0.01f, 1.0f}, 0xC0FF2020},
+                {{cx + r, cy,     0.01f, 1.0f}, 0xC0FF2020},
+                {{cx - r, cy,     0.01f, 1.0f}, 0xC0FF2020},
+                {{cx,     cy + r, 0.01f, 1.0f}, 0xC0FF2020},
+            };
+            g_Supervisor.d3dDevice->SetTexture(0, NULL);
+            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
+            g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            g_Supervisor.d3dDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+            g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, hv, sizeof(VertexDiffuseXyzrwh));
+        }
     }
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }

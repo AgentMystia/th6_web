@@ -45,15 +45,21 @@ target_compile_options(th06 PRIVATE -Wno-error=address-of-temporary -fno-strict-
 
 if(EMSCRIPTEN)
     set_target_properties(th06 PROPERTIES OUTPUT_NAME "th06" SUFFIX ".js")
-    # gl_device.cpp needs libpng (texture decode) and GLES3 (WebGL2).
-    target_compile_options(th06 PRIVATE -sUSE_LIBPNG=1)
+    # gl_device.cpp needs libpng+libjpeg (texture/surface decode) and GLES3 (WebGL2).
+    target_compile_options(th06 PRIVATE -sUSE_LIBPNG=1 -sUSE_LIBJPEG=1)
+    set(D "${CMAKE_SOURCE_DIR}/build/web")
     target_link_options(th06 PRIVATE
         -sUSE_WEBGL2=1
         -sFULL_ES3=1
         -sUSE_LIBPNG=1
+        -sUSE_LIBJPEG=1
         -sALLOW_MEMORY_GROWTH=1
         -sFORCE_FILESYSTEM=1
         -sEXPORTED_FUNCTIONS=_main,_th06_init,_th06_run,_th06_key_state_ptr
-        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,HEAPU8
+        -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,HEAPU8,HEAP16,HEAPU16
     )
+    # DAT embedding: CMake cannot pass --embed-file with @ to emcc correctly.
+    # To embed DATs, manually re-link after build:
+    #   cd build/cmake && cp ../web/th06_*.DAT . && emcc @CMakeFiles/th06.dir/objects1.rsp \
+    #     -o th06.js [same flags as above] --embed-file th06_IN.DAT ... --embed-file th06_MD.DAT
 endif()
