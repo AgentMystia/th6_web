@@ -1,0 +1,148 @@
+#pragma once
+
+#include "AnmVm.hpp"
+#include "Chain.hpp"
+#include "ZunTimer.hpp"
+#include "diffbuild.hpp"
+#include "inttypes.hpp"
+#include "zwave.hpp"
+#include <d3d8.h>
+#include <d3dx8math.h>
+
+namespace th06
+{
+struct RawStageHeader
+{
+    i16 nbObjects;
+    i16 nbFaces;
+    i32 facesOffset;
+    i32 scriptOffset;
+    i32 unk_c;
+    char stageName[128];
+    char songNames[4][128];
+    char songPaths[4][128];
+};
+ZUN_ASSERT_SIZE(RawStageHeader, 0x490);
+
+struct RawStageQuadBasic
+{
+    i16 type;
+    i16 byteSize;
+    i16 anmScript;
+    i16 vmIdx;
+    D3DXVECTOR3 position;
+    D3DXVECTOR2 size;
+};
+ZUN_ASSERT_SIZE(RawStageQuadBasic, 0x1c);
+
+struct RawStageObject
+{
+    i16 id;
+    i8 zLevel;
+    i8 flags;
+    D3DXVECTOR3 position;
+    D3DXVECTOR3 size;
+    RawStageQuadBasic firstQuad;
+};
+ZUN_ASSERT_SIZE(RawStageObject, 0x38);
+
+struct RawStageObjectInstance
+{
+    i16 id;
+    i16 unk2;
+    D3DXVECTOR3 position;
+};
+ZUN_ASSERT_SIZE(RawStageObjectInstance, 0x10);
+
+struct RawStageInstr
+{
+    i32 frame;
+    i16 opcode;
+    i16 size;
+    i32 args[3];
+};
+ZUN_ASSERT_SIZE(RawStageInstr, 0x14);
+
+struct StageCameraSky
+{
+    f32 nearPlane;
+    f32 farPlane;
+    D3DCOLOR color;
+};
+ZUN_ASSERT_SIZE(StageCameraSky, 0xc);
+
+enum SpellcardState
+{
+    NOT_RUNNING,
+    RUNNING,
+    RAN_FOR_60_FRAMES
+};
+
+struct StageFile
+{
+    char *anmFile;
+    char *stdFile;
+};
+ZUN_ASSERT_SIZE(StageFile, 0x8);
+
+enum StageOpcode
+{
+    STDOP_CAMERA_POSITION_KEY,
+    STDOP_FOG,
+    STDOP_CAMERA_FACING,
+    STDOP_CAMERA_FACING_INTERP_LINEAR,
+    STDOP_FOG_INTERP,
+    STDOP_PAUSE,
+};
+
+struct Stage
+{
+    Stage();
+    static ZunResult RegisterChain(u32 stage);
+    static void CutChain();
+    static ChainCallbackResult OnUpdate(Stage *stage);
+    static ChainCallbackResult OnDrawHighPrio(Stage *stage);
+    static ChainCallbackResult OnDrawLowPrio(Stage *stage);
+    static ZunResult AddedCallback(Stage *stage);
+    static ZunResult DeletedCallback(Stage *stage);
+
+    ZunResult LoadStageData(char *anmpath, char *stdpath);
+    ZunResult UpdateObjects();
+    ZunResult RenderObjects(i32 zLevel);
+
+    AnmVm *quadVms;
+    RawStageHeader *stdData;
+    i32 quadCount;
+    i32 objectsCount;
+    RawStageObject **objects;
+    RawStageObjectInstance *objectInstances;
+    RawStageInstr *beginningOfScript;
+    ZunTimer scriptTime;
+    i32 instructionIndex;
+    ZunTimer timer;
+    u32 stage;
+    D3DXVECTOR3 position;
+    StageCameraSky skyFog;
+    StageCameraSky skyFogInterpInitial;
+    StageCameraSky skyFogInterpFinal;
+    i32 skyFogInterpDuration;
+    ZunTimer skyFogInterpTimer;
+    i8 skyFogNeedsSetup;
+    SpellcardState spellcardState;
+    i32 ticksSinceSpellcardStarted;
+    AnmVm spellcardBackground;
+    AnmVm unk2;
+    u8 unpauseFlag;
+    D3DXVECTOR3 facingDirInterpInitial;
+    D3DXVECTOR3 facingDirInterpFinal;
+    i32 facingDirInterpDuration;
+    ZunTimer facingDirInterpTimer;
+    D3DXVECTOR3 positionInterpFinal;
+    i32 positionInterpEndTime;
+    D3DXVECTOR3 positionInterpInitial;
+    i32 positionInterpStartTime;
+};
+ZUN_ASSERT_SIZE(Stage, 0x2f4);
+
+DIFFABLE_EXTERN(Stage, g_Stage)
+}; // namespace th06
