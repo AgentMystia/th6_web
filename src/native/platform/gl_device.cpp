@@ -963,9 +963,14 @@ extern "C" HRESULT D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice8 *, const
     // TH06 textures: force alpha=255, then carve transparency via colorKey only.
     // PNG tRNS is intentionally discarded — TH06's palette PNGs have unreliable
     // tRNS data that causes sprites to be invisible if preserved.
-    for (size_t i = 3; i < rgba.size(); i += 4)
-        rgba[i] = 255;
-    applyColorKey(rgba, colorKey);
+    // When colorKey is 0 (disabled), preserve the PNG's native alpha channel —
+    // used by non-TH06 assets (e.g. hitbox.png) that have correct RGBA alpha.
+    if ((colorKey >> 24) != 0)
+    {
+        for (size_t i = 3; i < rgba.size(); i += 4)
+            rgba[i] = 255;
+        applyColorKey(rgba, colorKey);
+    }
     D3DFORMAT useFmt = (fmt == D3DFMT_UNKNOWN) ? D3DFMT_A8R8G8B8 : fmt;
     GLTexture *t = new GLTexture(W, H, useFmt);
     // Store decoded pixels into the native-format shadow (preserves banding), upload.

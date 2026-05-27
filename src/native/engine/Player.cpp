@@ -1,5 +1,8 @@
 #include "Player.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "AnmManager.hpp"
 #include "AnmVm.hpp"
 #include "BombData.hpp"
@@ -23,6 +26,33 @@
 namespace th06
 {
 DIFFABLE_STATIC(Player, g_Player);
+
+static IDirect3DTexture8 *g_HitboxTex = nullptr;
+static u32 g_HitboxFrame = 0;
+
+static void EnsureHitboxTexture()
+{
+    if (g_HitboxTex)
+        return;
+    FILE *f = fopen("hitbox.png", "rb");
+    if (!f)
+        return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 1024 * 1024)
+    {
+        fclose(f);
+        return;
+    }
+    u8 *buf = (u8 *)malloc(sz);
+    fread(buf, 1, sz, f);
+    fclose(f);
+    D3DXCreateTextureFromFileInMemoryEx(g_Supervisor.d3dDevice, buf, (UINT)sz, 0, 0, 1, 0,
+                                        D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, D3DX_DEFAULT, D3DX_DEFAULT,
+                                        0, nullptr, nullptr, &g_HitboxTex);
+    free(buf);
+}
 
 DIFFABLE_STATIC_ARRAY_ASSIGN(CharacterData, 4, g_CharData) = {
     /* ReimuA  */ {4.0, 2.0, 4.0, 2.0, Player::FireBulletReimuA, Player::FireBulletReimuA},
@@ -615,25 +645,44 @@ ChainCallbackResult Player::OnDrawHighPrio(Player *p)
             g_AnmManager->Draw(&p->orbsSprite[0]);
             g_AnmManager->Draw(&p->orbsSprite[1]);
         }
-        // Dynamic hitbox indicator: small red translucent diamond at the player's
-        // collision center, matching the behaviour of the d3d8.dll hitbox patch.
         if (p->playerState == PLAYER_STATE_ALIVE || p->playerState == PLAYER_STATE_INVULNERABLE)
         {
+            EnsureHitboxTexture();
             f32 cx = g_GameManager.arcadeRegionTopLeftPos.x + p->positionCenter.x;
             f32 cy = g_GameManager.arcadeRegionTopLeftPos.y + p->positionCenter.y;
-            f32 r = 2.0f;
-            VertexDiffuseXyzrwh hv[4] = {
-                {{cx,     cy - r, 0.01f, 1.0f}, 0xC0FF2020},
-                {{cx + r, cy,     0.01f, 1.0f}, 0xC0FF2020},
-                {{cx - r, cy,     0.01f, 1.0f}, 0xC0FF2020},
-                {{cx,     cy + r, 0.01f, 1.0f}, 0xC0FF2020},
-            };
-            g_Supervisor.d3dDevice->SetTexture(0, NULL);
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-            g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, hv, sizeof(VertexDiffuseXyzrwh));
+            f32 half = 32.0f;
+            f32 angle = g_HitboxFrame * 0.02f;
+            g_HitboxFrame++;
+            f32 cosA = cosf(angle), sinA = sinf(angle);
+            f32 dx0 = -half * cosA - (-half) * sinA;
+            f32 dy0 = -half * sinA + (-half) * cosA;
+            f32 dx1 =  half * cosA - (-half) * sinA;
+            f32 dy1 =  half * sinA + (-half) * cosA;
+            f32 dx2 = -half * cosA -   half  * sinA;
+            f32 dy2 = -half * sinA +   half  * cosA;
+            f32 dx3 =  half * cosA -   half  * sinA;
+            f32 dy3 =  half * sinA +   half  * cosA;
+            if (g_HitboxTex)
+            {
+                VertexTex1DiffuseXyzrwh hv[4] = {
+                    {{cx + dx0, cy + dy0, 0.01f, 1.0f}, 0xFFFFFFFF, {0.0f, 0.0f}},
+                    {{cx + dx1, cy + dy1, 0.01f, 1.0f}, 0xFFFFFFFF, {1.0f, 0.0f}},
+                    {{cx + dx2, cy + dy2, 0.01f, 1.0f}, 0xFFFFFFFF, {0.0f, 1.0f}},
+                    {{cx + dx3, cy + dy3, 0.01f, 1.0f}, 0xFFFFFFFF, {1.0f, 1.0f}},
+                };
+                g_Supervisor.d3dDevice->SetTexture(0, g_HitboxTex);
+                g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
+                g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+                g_Supervisor.d3dDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+                g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+                g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, hv, sizeof(VertexTex1DiffuseXyzrwh));
+            }
         }
     }
     return CHAIN_CALLBACK_RESULT_CONTINUE;
