@@ -365,8 +365,10 @@ EM_JS(void, gdiTextOut, (int bufPtr, int bufW, int bufH, int bpp, int x, int y, 
     ctx.textBaseline = 'top';
     ctx.fillText(text, x, y);
     var imgData = ctx.getImageData(0, 0, bufW, bufH).data;
-    // Write RGBA pixels into the native-format DIB buffer.
-    // TextHelper expects the DIB format (typically A1R5G5B5 or A8R8G8B8).
+    // Write pixels into the native-format DIB buffer.  Windows GDI TextOutA
+    // writes RGB with alpha=0 on A1R5G5B5 DIBs (the high bit is cleared).
+    // TextHelper::InvertAlpha relies on this: text pixels (alpha=0) get flipped
+    // to alpha=1 (visible), background pixels (alpha=1) get flipped to alpha=0.
     if (bpp === 4) {
         for (var i = 0; i < bufW * bufH; i++) {
             var a = imgData[i * 4 + 3];
@@ -375,14 +377,14 @@ EM_JS(void, gdiTextOut, (int bufPtr, int bufW, int bufH, int bpp, int x, int y, 
             Module.HEAPU8[bufPtr + i*4 + 0] = sb;
             Module.HEAPU8[bufPtr + i*4 + 1] = sg;
             Module.HEAPU8[bufPtr + i*4 + 2] = sr;
-            Module.HEAPU8[bufPtr + i*4 + 3] = a;
+            Module.HEAPU8[bufPtr + i*4 + 3] = 0;
         }
     } else if (bpp === 2) {
         for (var i = 0; i < bufW * bufH; i++) {
             var a = imgData[i * 4 + 3];
             if (a === 0) continue;
             var sr = imgData[i*4] >> 3, sg = imgData[i*4+1] >> 3, sb = imgData[i*4+2] >> 3;
-            var px = (a >= 128 ? 0x8000 : 0) | (sr << 10) | (sg << 5) | sb;
+            var px = (sr << 10) | (sg << 5) | sb;
             Module.HEAPU8[bufPtr + i*2] = px & 0xFF;
             Module.HEAPU8[bufPtr + i*2 + 1] = (px >> 8) & 0xFF;
         }
