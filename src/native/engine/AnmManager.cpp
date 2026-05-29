@@ -850,6 +850,11 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     {
         return ZUN_ERROR;
     }
+    if (vm->sprite == nullptr || vm->sprite->sourceFileIndex < 0 ||
+        vm->sprite->textureWidth <= 0.0f || vm->sprite->textureHeight <= 0.0f)
+    {
+        return ZUN_ERROR;
+    }
 
     worldTransformMatrix = vm->matrix;
     worldTransformMatrix.m[0][0] *= vm->scaleX;
@@ -974,6 +979,11 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     {
         return ZUN_ERROR;
     }
+    if (vm->sprite == nullptr || vm->sprite->sourceFileIndex < 0 ||
+        vm->sprite->textureWidth <= 0.0f || vm->sprite->textureHeight <= 0.0f)
+    {
+        return ZUN_ERROR;
+    }
 
     // WASM 2D projection: project quad center to screen, build XYZRHW vertices.
     worldTransformMatrix = vm->matrix;
@@ -1081,16 +1091,20 @@ i32 AnmManager::ExecuteScript(AnmVm *vm)
             vm->currentInstruction = NULL;
             return 1;
         case AnmOpcode_SetActiveSprite:
-            vm->flags.isVisible = 1;
-            this->SetActiveSprite(vm, curInstr->args[0] + this->spriteIndices[vm->anmFileIndex]);
-            vm->timeOfLastSpriteSet = vm->currentTimeInScript.AsFrames();
+            if (this->SetActiveSprite(vm, curInstr->args[0] + this->spriteIndices[vm->anmFileIndex]) == ZUN_SUCCESS)
+            {
+                vm->flags.isVisible = 1;
+                vm->timeOfLastSpriteSet = vm->currentTimeInScript.AsFrames();
+            }
             break;
         case AnmOpcode_SetRandomSprite:
-            vm->flags.isVisible = 1;
             local_c = &curInstr->args[0];
-            this->SetActiveSprite(vm, local_c[0] + g_Rng.GetRandomU16InRange(local_c[1]) +
-                                          this->spriteIndices[vm->anmFileIndex]);
-            vm->timeOfLastSpriteSet = vm->currentTimeInScript.AsFrames();
+            if (this->SetActiveSprite(vm, local_c[0] + g_Rng.GetRandomU16InRange(local_c[1]) +
+                                          this->spriteIndices[vm->anmFileIndex]) == ZUN_SUCCESS)
+            {
+                vm->flags.isVisible = 1;
+                vm->timeOfLastSpriteSet = vm->currentTimeInScript.AsFrames();
+            }
             break;
         case AnmOpcode_SetScale:
             vm->scaleX = *(f32 *)&curInstr->args[0];

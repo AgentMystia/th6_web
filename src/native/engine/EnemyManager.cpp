@@ -540,6 +540,10 @@ ChainCallbackResult EnemyManager::OnUpdate(EnemyManager *mgr)
         mgr->enemyCount++;
         curEnemy->Move();
         curEnemy->ClampPos();
+        if (curEnemy->primaryVm.sprite == nullptr || curEnemy->primaryVm.sprite->sourceFileIndex < 0)
+        {
+            continue;
+        }
         if (curEnemy->flags.unk8 == 0 &&
             g_GameManager.IsInBounds(curEnemy->position.x, curEnemy->position.y, curEnemy->primaryVm.sprite->widthPx,
                                      curEnemy->primaryVm.sprite->heightPx))
@@ -798,13 +802,16 @@ ChainCallbackResult EnemyManager::OnDraw(EnemyManager *mgr)
                 g_AnmManager->Draw2(curEnemyVm);
             }
         }
-        if (curEnemy->flags.unk13 != 0)
+        if (0 <= curEnemy->primaryVm.anmFileIndex)
         {
-            curEnemy->primaryVm.rotation.z = curEnemy->angle;
+            if (curEnemy->flags.unk13 != 0)
+            {
+                curEnemy->primaryVm.rotation.z = curEnemy->angle;
+            }
+            curEnemy->primaryVm.pos = curEnemy->position + curEnemy->primaryVm.posOffset;
+            curEnemy->primaryVm.pos.z = 0.494f;
+            g_AnmManager->Draw2(&curEnemy->primaryVm);
         }
-        curEnemy->primaryVm.pos = curEnemy->position + curEnemy->primaryVm.posOffset;
-        curEnemy->primaryVm.pos.z = 0.494f;
-        g_AnmManager->Draw2(&curEnemy->primaryVm);
         for (curEnemyVmIdx = 4; curEnemyVmIdx < 8; curEnemyVmIdx++, curEnemyVm++)
         {
             if (0 <= curEnemyVm->anmFileIndex)

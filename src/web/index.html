@@ -61,6 +61,11 @@
                 return;
               }
             }
+            // 加载判定点贴图（低速模式显示）
+            try {
+                const hbr = await fetch('hitbox.png');
+                if (hbr.ok) Module.FS.writeFile('hitbox.png', new Uint8Array(await hbr.arrayBuffer()));
+            } catch(e) { console.log('[boot] hitbox.png fetch skipped: ' + e); }
             setStatus('init…');
             console.log('[boot] DATs embedded=' + embedded + ', calling th06_init...');
             const rc = Module.ccall('th06_init', 'number', [], []);
