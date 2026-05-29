@@ -604,6 +604,7 @@ struct GLDevice : IDirect3DDevice8
         }
         dbgDraws = dbg2dDraws = dbgTexDraws = 0;
 #endif
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glFlush();
         return D3D_OK;
     }
@@ -722,17 +723,23 @@ struct GLDevice : IDirect3DDevice8
     UINT streamStride = 0;
     HRESULT __stdcall Clear(DWORD, const D3DRECT *, DWORD flags, D3DCOLOR color, float z, DWORD) override
     {
-        float a = ((color >> 24) & 0xFF) / 255.0f, r = ((color >> 16) & 0xFF) / 255.0f,
-              g = ((color >> 8) & 0xFF) / 255.0f, b = (color & 0xFF) / 255.0f;
-        glClearColor(r, g, b, a);
+        GLbitfield m = 0;
+        if (flags & D3DCLEAR_TARGET)
+        {
+            float a = ((color >> 24) & 0xFF) / 255.0f, r = ((color >> 16) & 0xFF) / 255.0f,
+                  g = ((color >> 8) & 0xFF) / 255.0f, b = (color & 0xFF) / 255.0f;
+            glClearColor(r, g, b, a);
+            m |= GL_COLOR_BUFFER_BIT;
+        }
+        if (flags & D3DCLEAR_ZBUFFER)
+        {
+            glClearDepthf(z);
+            m |= GL_DEPTH_BUFFER_BIT;
+        }
 #ifdef TH06_BOOT_TRACE
         dbgLastClear = color;
 #endif
-        glClearDepthf(z);
-        GLbitfield m = 0;
-        if (flags & D3DCLEAR_TARGET) m |= GL_COLOR_BUFFER_BIT;
-        if (flags & D3DCLEAR_ZBUFFER) m |= GL_DEPTH_BUFFER_BIT;
-        glClear(m);
+        if (m) glClear(m);
         return D3D_OK;
     }
     HRESULT __stdcall BeginScene() override { return D3D_OK; }
