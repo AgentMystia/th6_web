@@ -720,6 +720,7 @@ struct GLDevice : IDirect3DDevice8
     void drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx, UINT stride);
     GLVertexBuffer *streamVB = nullptr;
     UINT streamStride = 0;
+    int dbgXyzDraws = 0;  // count XYZ draws per frame for debug
     HRESULT __stdcall Clear(DWORD, const D3DRECT *, DWORD flags, D3DCOLOR color, float z, DWORD) override
     {
         GLbitfield m = 0;
@@ -741,7 +742,7 @@ struct GLDevice : IDirect3DDevice8
         if (m) glClear(m);
         return D3D_OK;
     }
-    HRESULT __stdcall BeginScene() override { return D3D_OK; }
+    HRESULT __stdcall BeginScene() override { dbgXyzDraws = 0; return D3D_OK; }
     HRESULT __stdcall EndScene() override { return D3D_OK; }
 };
 
@@ -808,6 +809,27 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
 #ifdef TH06_DEBUG_NO3D
     if (!xyzrhw) return;
 #endif
+
+    // Debug: dump first few XYZ draws to stderr
+    if (!xyzrhw && dbgXyzDraws < 3)
+    {
+        const float *fv = (const float *)vtx;
+        float fogS = *(float *)&rs[D3DRS_FOGSTART], fogE = *(float *)&rs[D3DRS_FOGEND];
+        fprintf(stderr, "[dbg] XYZ draw #%d: fvf=0x%X stride=%d tex=%s(%ux%u)\n",
+                dbgXyzDraws, (unsigned)fvf, stride, boundTex?"Y":"N",
+                boundTex?boundTex->w:0, boundTex?boundTex->h:0);
+        fprintf(stderr, "  v0=(%.1f,%.1f,%.1f) v1=(%.1f,%.1f,%.1f)\n",
+                fv[0],fv[1],fv[2], fv[5],fv[6],fv[7]);
+        fprintf(stderr, "  world trans=(%.1f,%.1f,%.1f)\n",
+                world.m[3][0], world.m[3][1], world.m[3][2]);
+        fprintf(stderr, "  fog: start=%.0f end=%.0f color=%08X enable=%d\n",
+                fogS, fogE, (unsigned)rs[D3DRS_FOGCOLOR], (int)rs[D3DRS_FOGENABLE]);
+        fprintf(stderr, "  view trans=(%.1f,%.1f,%.1f) proj(0,0)=%.4f proj(2,2)=%.4f proj(3,2)=%.1f\n",
+                view.m[3][0], view.m[3][1], view.m[3][2],
+                proj.m[0][0], proj.m[2][2], proj.m[3][2]);
+        dbgXyzDraws++;
+    }
+
     glUniform1i(u_mode, xyzrhw ? 0 : 1);
     glUniform2f(u_viewport, (float)vp.Width, (float)vp.Height);
     glUniform2f(u_viewportOfs, (float)vp.X, (float)vp.Y);
