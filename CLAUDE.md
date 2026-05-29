@@ -74,6 +74,12 @@ Push to `main` triggers `.github/workflows/build-and-deploy.yml`:
 - Do not define `DIFFBUILD`/`DLLBUILD`/`BINARYMATCHBUILD` — those enable struct-size asserts against the original binary
 - Compile with `-Wno-error=address-of-temporary -fno-strict-aliasing`
 
+## Deprecated Code
+
+- `src/vanilla/` — A JavaScript reimplementation of the engine, now **deprecated**. Do not modify, update, or read these files unless specifically asked.
+- `index.html` (root) — Loads the deprecated vanilla JS code. Not the WASM entry point.
+- The active web entry point is `src/web/index.html`, which bootstraps the WASM build.
+
 ## Git Workflow
 
 - Primary branch: `main`

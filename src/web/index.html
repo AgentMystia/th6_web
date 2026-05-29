@@ -6,14 +6,33 @@
     <title>東方紅魔郷 ~ the Embodiment of Scarlet Devil (WASM)</title>
     <style>
       html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-      #wrap { display: flex; align-items: center; justify-content: center; height: 100%; }
+      #wrap { display: flex; align-items: center; justify-content: center; height: 100%; position: relative; }
       /* 640x480 4:3, integer-friendly upscale; nearest keeps the pixel look. */
       #canvas { image-rendering: pixelated; background: #000; width: 640px; height: 480px; }
       #status { position: fixed; left: 8px; top: 8px; color: #6f6; font: 12px monospace; white-space: pre; }
+      #replay-import-btn {
+        position: absolute; bottom: 12px; right: 12px; z-index: 10;
+        padding: 6px 14px; font: 12px monospace;
+        background: rgba(80,60,30,0.72); color: #ffe6a8; border: 1px solid rgba(255,220,140,0.4);
+        border-radius: 4px; cursor: pointer; user-select: none;
+        transition: background 0.15s, opacity 0.3s;
+      }
+      #replay-import-btn:hover { background: rgba(120,90,40,0.88); }
+      #replay-import-btn:active { background: rgba(160,120,50,0.95); }
+      #replay-import-feedback {
+        position: absolute; bottom: 48px; right: 12px; z-index: 10;
+        padding: 4px 10px; font: 11px monospace;
+        background: rgba(0,0,0,0.7); color: #6f6; border-radius: 3px;
+        pointer-events: none; opacity: 0; transition: opacity 0.4s;
+      }
+      #replay-import-feedback.show { opacity: 1; }
     </style>
   </head>
   <body>
-    <div id="wrap"><canvas id="canvas" width="640" height="480" tabindex="0"></canvas></div>
+    <div id="wrap"><canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+      <button id="replay-import-btn" type="button">Import Replay</button>
+      <div id="replay-import-feedback"></div>
+    </div>
     <div id="status">booting… (title animation takes ~15s, please wait)</div>
     <script>
       // --- Browser keyboard -> DirectInput scancode table (DIK_*) ---
@@ -66,6 +85,63 @@
                 const hbr = await fetch('hitbox.png');
                 if (hbr.ok) Module.FS.writeFile('hitbox.png', new Uint8Array(await hbr.arrayBuffer()));
             } catch(e) { console.log('[boot] hitbox.png fetch skipped: ' + e); }
+
+            // --- Replay import support ---
+            try { Module.FS.mkdir('./replay'); } catch(e) {}
+            var replaySlot = 1;
+            var replayInput = document.createElement('input');
+            replayInput.type = 'file';
+            replayInput.accept = '.rpy';
+            replayInput.multiple = true;
+            replayInput.style.display = 'none';
+            document.body.appendChild(replayInput);
+            var feedbackEl = document.getElementById('replay-import-feedback');
+            function showFeedback(msg, ms) {
+              if (!feedbackEl) return;
+              feedbackEl.textContent = msg;
+              feedbackEl.classList.add('show');
+              clearTimeout(feedbackEl._timer);
+              feedbackEl._timer = setTimeout(function() { feedbackEl.classList.remove('show'); }, ms || 2500);
+            }
+            replayInput.addEventListener('change', function() {
+              var files = replayInput.files;
+              if (!files || !files.length) return;
+              var imported = 0, skipped = 0, total = files.length;
+              var done = 0;
+              Array.from(files).forEach(function(file) {
+                var reader = new FileReader();
+                reader.onload = function(ev) {
+                  done++;
+                  var buf = new Uint8Array(ev.target.result);
+                  if (buf.length < 4 || buf[0] !== 0x54 || buf[1] !== 0x36 || buf[2] !== 0x52 || buf[3] !== 0x50) {
+                    skipped++;
+                    console.log('[replay] skipped ' + file.name + ': not a valid T6RP file');
+                  } else {
+                    var path = './replay/th6_ud' + String(replaySlot).padStart(4, '0') + '.rpy';
+                    replaySlot++;
+                    Module.FS.writeFile(path, buf);
+                    imported++;
+                    console.log('[replay] imported ' + file.name + ' → ' + path);
+                  }
+                  if (done === total) {
+                    var msg = imported + ' replay(s) imported';
+                    if (skipped) msg += ', ' + skipped + ' skipped';
+                    showFeedback(msg, 3000);
+                  }
+                };
+                reader.readAsArrayBuffer(file);
+              });
+              replayInput.value = '';
+            });
+            var importBtn = document.getElementById('replay-import-btn');
+            if (importBtn) {
+              importBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                replayInput.click();
+                setTimeout(function() { Module.canvas.focus(); }, 100);
+              });
+            }
+            // --- End replay import ---
             setStatus('init…');
             console.log('[boot] DATs embedded=' + embedded + ', calling th06_init...');
             const rc = Module.ccall('th06_init', 'number', [], []);
