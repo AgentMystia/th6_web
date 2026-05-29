@@ -917,22 +917,18 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     }
     this->currentSprite = vm->sprite;
 
-    // Use XYZ vertices — GL shader handles world*view*proj, texture matrix, and fog.
-    static VertexTex1DiffuseXyz xyzVerts[4] = {
-        {{-128, -128, 0}, 0xFFFFFFFF, {0, 0}},
-        {{ 128, -128, 0}, 0xFFFFFFFF, {1, 0}},
-        {{-128,  128, 0}, 0xFFFFFFFF, {0, 1}},
-        {{ 128,  128, 0}, 0xFFFFFFFF, {1, 1}},
+    // Use XYZ vertices — original uses vertex buffer (TEX1|XYZ, no diffuse).
+    static RenderVertexInfo xyzVerts3[4] = {
+        {{-128, -128, 0}, {0, 0}},
+        {{ 128, -128, 0}, {1, 0}},
+        {{-128,  128, 0}, {0, 1}},
+        {{ 128,  128, 0}, {1, 1}},
     };
-    xyzVerts[0].diffuse = vm->color;
-    xyzVerts[1].diffuse = vm->color;
-    xyzVerts[2].diffuse = vm->color;
-    xyzVerts[3].diffuse = vm->color;
 
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZ);
+    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_XYZ);
     this->currentVertexShader = 3;
     this->SetRenderStateForVm(vm);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, xyzVerts, sizeof(VertexTex1DiffuseXyz));
+    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, xyzVerts3, sizeof(RenderVertexInfo));
     return ZUN_SUCCESS;
 }
 
@@ -998,22 +994,18 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     }
     this->currentSprite = vm->sprite;
 
-    // Use XYZ vertices — GL shader handles world*view*proj, texture matrix, and fog.
-    static VertexTex1DiffuseXyz xyzVerts[4] = {
-        {{-128, -128, 0}, 0xFFFFFFFF, {0, 0}},
-        {{ 128, -128, 0}, 0xFFFFFFFF, {1, 0}},
-        {{-128,  128, 0}, 0xFFFFFFFF, {0, 1}},
-        {{ 128,  128, 0}, 0xFFFFFFFF, {1, 1}},
+    // Use XYZ vertices — original uses vertex buffer (TEX1|XYZ, no diffuse).
+    static RenderVertexInfo xyzVerts[4] = {
+        {{-128, -128, 0}, {0, 0}},
+        {{ 128, -128, 0}, {1, 0}},
+        {{-128,  128, 0}, {0, 1}},
+        {{ 128,  128, 0}, {1, 1}},
     };
-    xyzVerts[0].diffuse = vm->color;
-    xyzVerts[1].diffuse = vm->color;
-    xyzVerts[2].diffuse = vm->color;
-    xyzVerts[3].diffuse = vm->color;
 
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZ);
+    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_XYZ);
     this->currentVertexShader = 3;
     this->SetRenderStateForVm(vm);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, xyzVerts, sizeof(VertexTex1DiffuseXyz));
+    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, xyzVerts, sizeof(RenderVertexInfo));
     return ZUN_SUCCESS;
 }
 

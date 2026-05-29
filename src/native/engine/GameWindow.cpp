@@ -36,14 +36,10 @@ RenderResult GameWindow::Render()
     LOOP_USING_GOTO_BECAUSE_WHY_NOT:
         if (g_Supervisor.cfg.frameskipConfig <= this->curFrame)
         {
-            // Always clear the full canvas to the stage fog/sky color before
-            // drawing. In the original D3D8 game, D3DSWAPEFFECT_DISCARD makes the
-            // backbuffer undefined after Present; the game redraws every pixel each
-            // frame. With WebGL preserveDrawingBuffer=false, the canvas content is
-            // similarly undefined between frames. Clearing to the fog color ensures
-            // that any gaps in the stage background (which would normally be filled
-            // by D3D vertex fog, but our Draw2/Draw3 XYZRHW path bypasses it) show
-            // the correct sky color instead of stale or uninitialized pixels.
+            // Clear the full canvas to black (for sidebar/border areas), then
+            // clear only the game viewport to the stage fog/sky color. This
+            // ensures gaps in the stage background show fog color while the
+            // sidebar stays black.
             {
                 viewport.X = 0;
                 viewport.Y = 0;
@@ -53,8 +49,10 @@ RenderResult GameWindow::Render()
                 viewport.MaxZ = 1.0;
                 g_Supervisor.d3dDevice->SetViewport(&viewport);
                 g_Supervisor.d3dDevice->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
-                                               g_Stage.skyFog.color, 1.0, 0);
+                                               0xFF000000, 1.0, 0);
                 g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+                g_Supervisor.d3dDevice->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+                                               g_Stage.skyFog.color, 1.0, 0);
             }
             g_Supervisor.d3dDevice->BeginScene();
             g_Chain.RunDrawChain();

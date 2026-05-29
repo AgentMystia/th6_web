@@ -56,7 +56,7 @@ uniform mat4 uTexMatrix;
 uniform int uTexTransform;
 out vec4 vColor;
 out vec2 vUV;
-out float vFogFactor;
+out float vEyeZ;
 void main(){
   vColor = aColor.bgra;     // D3DCOLOR BGRA in memory -> RGBA
   if (uMode == 0) {
@@ -65,15 +65,14 @@ void main(){
     float y = 1.0 - ((aPos.y - uViewportOfs.y) / uViewport.y) * 2.0;
     float z = aPos.z * 2.0 - 1.0;
     gl_Position = vec4(x, y, z, 1.0);
-    vFogFactor = 1.0;       // no fog for 2D
+    vEyeZ = 0.0;            // no fog for 2D
   } else {
     vUV = uTexTransform != 0 ? (uTexMatrix * vec4(aUV, 1.0, 1.0)).xy : aUV;
     gl_Position = uMVP * vec4(aPos.xyz, 1.0);
     if (uFogEnable != 0) {
-      float eyeZ = abs((uMV * vec4(aPos.xyz, 1.0)).z);
-      vFogFactor = clamp((uFogEnd - eyeZ) / (uFogEnd - uFogStart + 0.0001), 0.0, 1.0);
+      vEyeZ = abs((uMV * vec4(aPos.xyz, 1.0)).z);
     } else {
-      vFogFactor = 1.0;
+      vEyeZ = -1.0;         // negative signals "fog off"
     }
   }
 }
@@ -84,7 +83,7 @@ precision highp float;
 precision highp int;
 in vec4 vColor;
 in vec2 vUV;
-in float vFogFactor;
+in float vEyeZ;
 uniform sampler2D uTex;
 uniform int uUseTexture;
 uniform vec4 uTFactor;
@@ -94,6 +93,7 @@ uniform int uAlphaTest, uAlphaFunc;
 uniform float uAlphaRef;
 uniform int uFogEnable;
 uniform vec4 uFogColor;
+uniform float uFogStart, uFogEnd;
 out vec4 fragColor;
 
 vec4 pickArg(int a, vec4 tex){
@@ -113,13 +113,11 @@ void main(){
   vec3 rgb = vec3(combine1(uColorOp, c1.r, c2.r), combine1(uColorOp, c1.g, c2.g), combine1(uColorOp, c1.b, c2.b));
   float a = combine1(uAlphaOp, a1.a, a2.a);
   vec4 col = vec4(rgb, a);
-  // D3D fog: applied after combiner, before alpha test.
-  if (uFogEnable != 0)
-    col.rgb = mix(uFogColor.rgb, col.rgb, vFogFactor);
-  // TH06 uses A4R4G4B4 (4-bit alpha); many background textures have alpha from
-  // the PNG's palette transparency. When the engine draws opaque geometry with
-  // ALPHABLENDENABLE=TRUE (the 3D bg path), we must respect the full pipeline:
-  // alpha test handles cutout, alpha blend handles layering. No override needed.
+  // D3D table fog (per-pixel): compute fog factor from interpolated eye-space Z.
+  if (uFogEnable != 0 && vEyeZ >= 0.0) {
+    float fogFactor = clamp((uFogEnd - vEyeZ) / (uFogEnd - uFogStart + 0.0001), 0.0, 1.0);
+    col.rgb = mix(uFogColor.rgb, col.rgb, fogFactor);
+  }
   if (uAlphaTest != 0) {
     bool pass = uAlphaFunc == 8 || (uAlphaFunc == 7 ? col.a >= uAlphaRef
                : uAlphaFunc == 4 ? col.a <= uAlphaRef : col.a > uAlphaRef);
