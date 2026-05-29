@@ -55,6 +55,7 @@ jobs:
           cp build/cmake/th06.wasm "$DEPLOY/"
           cp assets/audio/*.ogg "$DEPLOY/assets/audio/"
           cp assets/th06font.ttf "$DEPLOY/"
+          cp assets/hitbox.png "$DEPLOY/"
           cd "$DEPLOY"
           git init -b gh-pages
           git config user.name "github-actions[bot]"
