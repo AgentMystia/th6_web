@@ -835,6 +835,7 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 {
     D3DXMATRIX worldTransformMatrix;
     D3DXMATRIX rotationMatrix;
+    D3DXMATRIX textureMatrix;
     f32 scaledXCenter;
     f32 scaledYCenter;
 
