@@ -1309,7 +1309,7 @@ i32 MainMenu::ReplayHandling()
                 {
                     for (cur = 0; cur < 0x2d; cur++)
                     {
-                        replayData = (ReplayData *)FileSystem::OpenPath(replayFilePath, 1);
+                        replayData = (ReplayData *)FileSystem::OpenPath(replayFileInfo.cFileName, 1);
                         if (replayData == NULL)
                         {
                             continue;
