@@ -900,85 +900,51 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
     worldTransformMatrix.m[3][2] = vm->pos.z;
 
-    // WASM 2D projection: project the 4 quad corners to screen space,
-    // then draw as a pretransformed (XYZRHW) textured quad with direct UVs.
-    // Clip to game region so 3D background doesn't cover the sidebar UI.
+    // GPU 3D path: submit model-space XYZ vertices so the shader performs
+    // perspective-correct texture interpolation (fixes lake diagonal seams).
+    // Fog is also applied per-pixel by the shader instead of per-vertex on CPU.
     D3DXVECTOR3 corners[4] = {
-        {-128, -128, 0}, {128, -128, 0},
-        {-128,  128, 0}, {128,  128, 0}
+        D3DXVECTOR3(-128, -128, 0), D3DXVECTOR3(128, -128, 0),
+        D3DXVECTOR3(-128,  128, 0), D3DXVECTOR3(128,  128, 0)
     };
 
-    // Compute world*view for CPU fog (same as Draw2).
-    D3DXMATRIX worldView;
-    D3DXMatrixMultiply(&worldView, &worldTransformMatrix, &g_Supervisor.viewMatrix);
-    DWORD fogEnable = 0, fogColorDW = 0, fogStartDW = 0, fogEndDW = 0;
-    g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGENABLE, &fogEnable);
-    g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGCOLOR, &fogColorDW);
-    g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGSTART, &fogStartDW);
-    g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGEND, &fogEndDW);
-    float fogStart = *(float *)&fogStartDW, fogEnd = *(float *)&fogEndDW;
-    float fogRange = fogEnd - fogStart;
-    float fogR = ((fogColorDW >> 16) & 0xFF) / 255.0f;
-    float fogG = ((fogColorDW >> 8) & 0xFF) / 255.0f;
-    float fogB = (fogColorDW & 0xFF) / 255.0f;
-
-    VertexTex1DiffuseXyzrwh verts[4];
-    for (int i = 0; i < 4; i++)
+    // Visibility culling: project corners and check screen bounds.
     {
         D3DXVECTOR3 s;
-        D3DXVec3Project(&s, &corners[i], &g_Supervisor.viewport,
+        D3DXVec3Project(&s, &corners[0], &g_Supervisor.viewport,
                         &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
                         &worldTransformMatrix);
-        verts[i].position = {s.x, s.y, s.z, 1.0f};
-
-        if (fogEnable && fogRange > 0.001f)
-        {
-            D3DXVECTOR3 eyeSpace;
-            D3DXVec3TransformCoord(&eyeSpace, &corners[i], &worldView);
-            float eyeZ = fabsf(eyeSpace.z);
-            float fogFactor = (fogEnd - eyeZ) / fogRange;
-            if (fogFactor < 0.0f) fogFactor = 0.0f;
-            if (fogFactor > 1.0f) fogFactor = 1.0f;
-            float vr = ((vm->color >> 16) & 0xFF) / 255.0f;
-            float vg = ((vm->color >> 8) & 0xFF) / 255.0f;
-            float vb = (vm->color & 0xFF) / 255.0f;
-            float va = ((vm->color >> 24) & 0xFF) / 255.0f;
-            vr = fogR + (vr - fogR) * fogFactor;
-            vg = fogG + (vg - fogG) * fogFactor;
-            vb = fogB + (vb - fogB) * fogFactor;
-            unsigned char cr = (unsigned char)(vr * 255.0f + 0.5f);
-            unsigned char cg = (unsigned char)(vg * 255.0f + 0.5f);
-            unsigned char cb = (unsigned char)(vb * 255.0f + 0.5f);
-            unsigned char ca = (unsigned char)(va * 255.0f + 0.5f);
-            verts[i].diffuse = ((DWORD)ca << 24) | ((DWORD)cr << 16) | ((DWORD)cg << 8) | (DWORD)cb;
-        }
-        else
-        {
-            verts[i].diffuse = vm->color;
-        }
-    }
-    {
-        float minX = verts[0].position.x, maxX = verts[0].position.x;
-        float minY = verts[0].position.y, maxY = verts[0].position.y;
+        float minX = s.x, maxX = s.x, minY = s.y, maxY = s.y;
         for (int i = 1; i < 4; i++)
         {
-            if (verts[i].position.x < minX) minX = verts[i].position.x;
-            if (verts[i].position.x > maxX) maxX = verts[i].position.x;
-            if (verts[i].position.y < minY) minY = verts[i].position.y;
-            if (verts[i].position.y > maxY) maxY = verts[i].position.y;
+            D3DXVec3Project(&s, &corners[i], &g_Supervisor.viewport,
+                            &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
+                            &worldTransformMatrix);
+            if (s.x < minX) minX = s.x;
+            if (s.x > maxX) maxX = s.x;
+            if (s.y < minY) minY = s.y;
+            if (s.y > maxY) maxY = s.y;
         }
         if (maxX < (float)GAME_REGION_LEFT || minX > (float)GAME_REGION_RIGHT ||
             maxY < (float)GAME_REGION_TOP || minY > (float)GAME_REGION_BOTTOM)
             return ZUN_SUCCESS;
     }
-    verts[0].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[1].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[2].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
-    verts[3].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+
+    // Build XYZ vertices with model-space positions; fog handled by shader.
+    VertexTex1DiffuseXyz verts[4];
+    verts[0].position = D3DXVECTOR3(-128, -128, 0);
+    verts[1].position = D3DXVECTOR3(128, -128, 0);
+    verts[2].position = D3DXVECTOR3(-128, 128, 0);
+    verts[3].position = D3DXVECTOR3(128, 128, 0);
+    verts[0].diffuse = verts[1].diffuse = verts[2].diffuse = verts[3].diffuse = vm->color;
+    verts[0].textureUV = D3DXVECTOR2(vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvStart.y + vm->uvScrollPos.y);
+    verts[1].textureUV = D3DXVECTOR2(vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvStart.y + vm->uvScrollPos.y);
+    verts[2].textureUV = D3DXVECTOR2(vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvEnd.y + vm->uvScrollPos.y);
+    verts[3].textureUV = D3DXVECTOR2(vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvEnd.y + vm->uvScrollPos.y);
 
     if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
     {
@@ -987,10 +953,14 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     }
     this->currentSprite = vm->sprite;
 
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
+    g_Supervisor.d3dDevice->SetTransform(D3DTS_WORLD, &worldTransformMatrix);
+    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE | D3DFVF_XYZ);
     this->currentVertexShader = 2;
     this->SetRenderStateForVm(vm);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(VertexTex1DiffuseXyzrwh));
+    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(VertexTex1DiffuseXyz));
+    D3DXMATRIX restoreWorld;
+    D3DXMatrixIdentity(&restoreWorld);
+    g_Supervisor.d3dDevice->SetTransform(D3DTS_WORLD, &restoreWorld);
     return ZUN_SUCCESS;
 }
 
