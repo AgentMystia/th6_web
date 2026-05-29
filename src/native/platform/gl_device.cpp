@@ -689,6 +689,7 @@ struct GLDevice : IDirect3DDevice8
         return D3D_OK;
     }
     HRESULT __stdcall SetRenderState(D3DRENDERSTATETYPE s, DWORD v) override { if (s < 256) rs[s] = v; return D3D_OK; }
+    HRESULT __stdcall GetRenderState(D3DRENDERSTATETYPE s, DWORD *v) override { if (v && s < 256) *v = rs[s]; return D3D_OK; }
     HRESULT __stdcall SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE t, DWORD v) override
     {
         if (stage == 0 && t < 64) tss0[t] = v;

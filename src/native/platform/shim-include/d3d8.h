@@ -70,6 +70,7 @@ struct IDirect3DDevice8 : public IUnknown
     virtual HRESULT __stdcall GetViewport(D3DVIEWPORT8 *pViewport) = 0;
     virtual HRESULT __stdcall SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) = 0;
     virtual HRESULT __stdcall SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) = 0;
+    virtual HRESULT __stdcall GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue) = 0;
     virtual HRESULT __stdcall SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) = 0;
     virtual HRESULT __stdcall SetTexture(DWORD Stage, IDirect3DBaseTexture8 *pTexture) = 0;
     virtual HRESULT __stdcall SetVertexShader(DWORD Handle) = 0;
