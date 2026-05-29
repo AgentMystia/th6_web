@@ -995,12 +995,6 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     this->currentVertexShader = 2;
     this->SetRenderStateForVm(vm);
 
-    // Disable Z-write to prevent z-fighting between overlapping stage tiles
-    // (e.g. Stage 2 lake surface made of many tiles at the same depth).
-    DWORD prevZWrite;
-    g_Supervisor.d3dDevice->GetRenderState(D3DRS_ZWRITEENABLE, &prevZWrite);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-
     // Draw each grid row as a triangle strip.
     for (int iy = 0; iy < SUBDIV; iy++)
     {
@@ -1013,7 +1007,6 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
         g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2 * SUBDIV, strip,
                                                 sizeof(VertexTex1DiffuseXyzrwh));
     }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, prevZWrite);
     return ZUN_SUCCESS;
 }
 

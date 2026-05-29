@@ -508,6 +508,11 @@ ZunResult Stage::RenderObjects(i32 zLevel)
     instance = &this->objectInstances[0];
     instancesDrawn = 0;
     didDraw = 0;
+    // Disable Z-write for all stage background tiles to prevent z-fighting
+    // between overlapping tiles at the same depth (e.g. Stage 2 lake surface).
+    DWORD prevZWrite;
+    g_Supervisor.d3dDevice->GetRenderState(D3DRS_ZWRITEENABLE, &prevZWrite);
+    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     projectSrc.x = 0.0;
     projectSrc.y = 0.0;
     projectSrc.z = 0.0;
@@ -683,6 +688,7 @@ ZunResult Stage::RenderObjects(i32 zLevel)
     skip:
         instance++;
     }
+    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, prevZWrite);
     return ZUN_SUCCESS;
 }
 }; // namespace th06
