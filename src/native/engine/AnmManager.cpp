@@ -971,14 +971,19 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
             maxY < (float)GAME_REGION_TOP || minY > (float)GAME_REGION_BOTTOM)
             return ZUN_SUCCESS;
     }
-    verts[0].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[1].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[2].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
-    verts[3].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+    // Compute UVs via texture matrix transform (same as Draw2).
+    {
+        D3DXMATRIX texMat = vm->matrix;
+        texMat.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+        texMat.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+        float u0v0x = texMat.m[2][0] + texMat.m[3][0];
+        float u0v0y = texMat.m[2][1] + texMat.m[3][1];
+        verts[0].textureUV = {u0v0x, u0v0y};
+        verts[1].textureUV = {texMat.m[0][0] + u0v0x, texMat.m[0][1] + u0v0y};
+        verts[2].textureUV = {texMat.m[1][0] + u0v0x, texMat.m[1][1] + u0v0y};
+        verts[3].textureUV = {texMat.m[0][0] + texMat.m[1][0] + u0v0x,
+                              texMat.m[0][1] + texMat.m[1][1] + u0v0y};
+    }
 
     if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
     {
@@ -1111,14 +1116,23 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
             maxY < (float)GAME_REGION_TOP || minY > (float)GAME_REGION_BOTTOM)
             return ZUN_SUCCESS;
     }
-    verts[0].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[1].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvStart.y + vm->uvScrollPos.y};
-    verts[2].textureUV = {vm->sprite->uvStart.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
-    verts[3].textureUV = {vm->sprite->uvEnd.x + vm->uvScrollPos.x,
-                          vm->sprite->uvEnd.y + vm->uvScrollPos.y};
+
+    // Compute UVs via texture matrix transform, matching original D3D path.
+    // Original: textureMatrix = vm->matrix; m[2][0]=uvStart.x+scroll.x; m[2][1]=uvStart.y+scroll.y;
+    // Then D3D transforms vertex UVs (0,0)-(1,1) through this matrix.
+    // After transpose for GL convention: output.x = m[0][0]*u + m[1][0]*v + m[2][0] + m[3][0]
+    {
+        D3DXMATRIX texMat = vm->matrix;
+        texMat.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+        texMat.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+        float u0v0x = texMat.m[2][0] + texMat.m[3][0];
+        float u0v0y = texMat.m[2][1] + texMat.m[3][1];
+        verts[0].textureUV = {u0v0x, u0v0y};
+        verts[1].textureUV = {texMat.m[0][0] + u0v0x, texMat.m[0][1] + u0v0y};
+        verts[2].textureUV = {texMat.m[1][0] + u0v0x, texMat.m[1][1] + u0v0y};
+        verts[3].textureUV = {texMat.m[0][0] + texMat.m[1][0] + u0v0x,
+                              texMat.m[0][1] + texMat.m[1][1] + u0v0y};
+    }
 
     if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
     {
