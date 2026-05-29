@@ -87,8 +87,11 @@
             } catch(e) { console.log('[boot] hitbox.png fetch skipped: ' + e); }
 
             // --- Replay import support ---
-            try { Module.FS.mkdir('./replay'); } catch(e) {}
-            var replaySlot = 1;
+            // Write imported replays to numbered slots th6_XX.rpy (10-15) so the engine
+            // finds them via its straightforward sprintf+fopen scan, bypassing the
+            // chdir+FindFirstFileA path that may not work reliably in MEMFS.
+            try { Module.FS.mkdir('/replay'); } catch(e) {}
+            var replaySlot = 10;
             var replayInput = document.createElement('input');
             replayInput.type = 'file';
             replayInput.accept = '.rpy';
@@ -102,6 +105,13 @@
               feedbackEl.classList.add('show');
               clearTimeout(feedbackEl._timer);
               feedbackEl._timer = setTimeout(function() { feedbackEl.classList.remove('show'); }, ms || 2500);
+            }
+            function nextSlot() {
+              for (var s = replaySlot; s <= 15; s++) {
+                var p = '/replay/th6_' + String(s).padStart(2, '0') + '.rpy';
+                try { if (!Module.FS.analyzePath(p).exists) { replaySlot = s + 1; return p; } } catch(e) {}
+              }
+              return null;
             }
             replayInput.addEventListener('change', function() {
               var files = replayInput.files;
@@ -117,11 +127,15 @@
                     skipped++;
                     console.log('[replay] skipped ' + file.name + ': not a valid T6RP file');
                   } else {
-                    var path = './replay/th6_ud' + String(replaySlot).padStart(4, '0') + '.rpy';
-                    replaySlot++;
-                    Module.FS.writeFile(path, buf);
-                    imported++;
-                    console.log('[replay] imported ' + file.name + ' → ' + path);
+                    var slot = nextSlot();
+                    if (!slot) {
+                      skipped++;
+                      console.log('[replay] skipped ' + file.name + ': all 15 replay slots occupied');
+                    } else {
+                      Module.FS.writeFile(slot, buf);
+                      imported++;
+                      console.log('[replay] imported ' + file.name + ' → ' + slot);
+                    }
                   }
                   if (done === total) {
                     var msg = imported + ' replay(s) imported';
