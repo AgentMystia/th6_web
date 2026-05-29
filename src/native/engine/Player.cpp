@@ -645,7 +645,7 @@ ChainCallbackResult Player::OnDrawHighPrio(Player *p)
             g_AnmManager->Draw(&p->orbsSprite[0]);
             g_AnmManager->Draw(&p->orbsSprite[1]);
         }
-        if (p->playerState == PLAYER_STATE_ALIVE || p->playerState == PLAYER_STATE_INVULNERABLE)
+        if (p->isFocus && (p->playerState == PLAYER_STATE_ALIVE || p->playerState == PLAYER_STATE_INVULNERABLE))
         {
             EnsureHitboxTexture();
             f32 cx = g_GameManager.arcadeRegionTopLeftPos.x + p->positionCenter.x;
