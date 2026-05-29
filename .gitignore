@@ -1,8 +1,31 @@
 build/
 reference/
+node_modules/
+dist/
 *.log
 .DS_Store
 Thumbs.db
 .codex
 .idea/
 .vscode/
+.claude/
+.mcp.json
+
+# Personal dotfiles (sandbox artifacts)
+.bash_profile
+.bashrc
+.gitconfig
+.gitmodules
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+
+# Test / coverage
+playwright-report/
+test-results/
+.nyc_output/
+coverage/
+
+# MIDI assets (large, not used in WASM build)
+assets/audio/*.mid
