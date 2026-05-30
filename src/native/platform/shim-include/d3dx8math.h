@@ -377,6 +377,19 @@ inline D3DXVECTOR3 *D3DXVec3Project(D3DXVECTOR3 *out, const D3DXVECTOR3 *v, cons
     return out;
 }
 
+// Project using a pre-computed world*view*proj clip matrix (avoids redundant
+// matrix multiplies when projecting many vertices with the same transforms).
+inline D3DXVECTOR3 *D3DXVec3ProjectCached(D3DXVECTOR3 *out, const D3DXVECTOR3 *v,
+    const D3DVIEWPORT8 *viewport, const D3DXMATRIX *clip)
+{
+    D3DXVECTOR3 t;
+    D3DXVec3TransformCoord(&t, v, clip);
+    out->x = viewport->X + (1.0f + t.x) * 0.5f * viewport->Width;
+    out->y = viewport->Y + (1.0f - t.y) * 0.5f * viewport->Height;
+    out->z = viewport->MinZ + t.z * (viewport->MaxZ - viewport->MinZ);
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Texture / surface helpers (impl in the platform backend: decode → GL upload,
 // surface blits). Declared here so headers including only <d3dx8math.h> see them.

@@ -929,6 +929,8 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
     D3DXMATRIX worldView;
     D3DXMatrixMultiply(&worldView, &worldTransformMatrix, &g_Supervisor.viewMatrix);
+    D3DXMATRIX worldViewProj;
+    D3DXMatrixMultiply(&worldViewProj, &worldView, &g_Supervisor.projectionMatrix);
     DWORD fogEnable = 0, fogColorDW = 0, fogStartDW = 0, fogEndDW = 0;
     g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGENABLE, &fogEnable);
     g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGCOLOR, &fogColorDW);
@@ -961,9 +963,8 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
             D3DXVECTOR3 corner(fx, fy, 0);
             D3DXVECTOR3 s;
-            D3DXVec3Project(&s, &corner, &g_Supervisor.viewport,
-                            &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
-                            &worldTransformMatrix);
+            D3DXVec3ProjectCached(&s, &corner, &g_Supervisor.viewport,
+                            &worldViewProj);
 
             int idx = iy * GRID + ix;
             grid[idx].position = {s.x, s.y, s.z, 1.0f};
@@ -1086,6 +1087,8 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     // that was lost when we switched from XYZ to XYZRHW projection).
     D3DXMATRIX worldView;
     D3DXMatrixMultiply(&worldView, &worldTransformMatrix, &g_Supervisor.viewMatrix);
+    D3DXMATRIX worldViewProj;
+    D3DXMatrixMultiply(&worldViewProj, &worldView, &g_Supervisor.projectionMatrix);
     DWORD fogEnable = 0, fogColorDW = 0, fogStartDW = 0, fogEndDW = 0;
     g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGENABLE, &fogEnable);
     g_Supervisor.d3dDevice->GetRenderState(D3DRS_FOGCOLOR, &fogColorDW);
@@ -1125,9 +1128,8 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     for (int i = 0; i < 4; i++)
     {
         D3DXVECTOR3 s;
-        D3DXVec3Project(&s, &corners[i], &g_Supervisor.viewport,
-                        &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
-                        &worldTransformMatrix);
+        D3DXVec3ProjectCached(&s, &corners[i], &g_Supervisor.viewport,
+                        &worldViewProj);
         verts[i].position = {s.x, s.y, s.z, 1.0f};
         verts[i].diffuse = foggedColor;
     }
