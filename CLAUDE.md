@@ -6,10 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 TouhouWeb is a C++ WASM port of the Touhou 6 (東方紅魔郷 ~ the Embodiment of Scarlet Devil) decompilation by GensokyoClub/th06, compiled to WebAssembly via Emscripten. The engine renders through a D3D8→WebGL2 translation layer.
 
-## Build Commands
+## Build & Deploy
+
+**Standard workflow: push to `fresh-main`, force-push to `main`, let GitHub CI build and deploy to gh-pages.**
 
 ```bash
-# WASM build (requires Emscripten)
+# Local WASM build (only for long-running debug sessions; requires Emscripten)
 export EM_CACHE=$PWD/build/emcache        # sandbox: ~/.cache may be read-only
 emcmake cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build/cmake -j$(nproc)
@@ -17,10 +19,11 @@ cmake --build build/cmake -j$(nproc)
 
 # Native headless build (for boot validation, requires 32-bit pointers)
 cmake -S . -B build-native -DCMAKE_CXX_FLAGS=-m32 && cmake --build build-native
-
-# Deploy: copy build output to build/web/ and push
-cp build/cmake/th06.js build/cmake/th06.wasm src/web/index.html assets/hitbox.png build/web/
 ```
+
+## Agent Model Policy
+
+**Always specify `model: opus` when calling the Agent tool.** Built-in agents like Explore default to Haiku which degrades code understanding quality. Explicitly override to ensure consistency with the parent model.
 
 ## Architecture
 
@@ -52,12 +55,23 @@ cp build/cmake/th06.js build/cmake/th06.wasm src/web/index.html assets/hitbox.pn
 - `win32_runtime.cpp` — Win32 compatibility (timing, file I/O)
 - `shim-include/` — D3D/D3DX header shims with custom math implementations
 
+### Web Entry Point
+
+`src/web/index.html` is the sole web entry point. It handles:
+- WASM module loading and bootstrapping (`th06_init()` / `th06_run()`)
+- DAT asset fetching and MEMFS mounting
+- Keyboard → DirectInput scancode mapping (DIK table)
+- Input edge tracking for rapid key-press fidelity
+- Fullscreen mode (Alt+Enter / double-click toggle, 4:3 CSS scaling)
+- WebGL2 context with `desynchronized: true` (injected via JS proxy for lower latency)
+- Replay import UI
+- Web Audio unlock on first interaction
+
 ### Asset Loading
 
 - Original TH06 `.DAT` archives (PBG3 format) are embedded in the WASM binary at link time via `--embed-file`
 - `FileSystem::OpenPath()` searches PBG3 archives first, falls back to `fopen()`
 - Runtime assets (hitbox.png, th06font.ttf, audio) are fetched via HTTP at boot and written to Emscripten's MEMFS
-- Boot HTML: `src/web/index.html` handles DAT fetch, font loading, keyboard→DIK scancode mapping
 
 ## CI/CD
 
@@ -73,12 +87,6 @@ Push to `main` triggers `.github/workflows/build-and-deploy.yml`:
 - `DIFFABLE_STATIC` macros create global statics matching the original binary layout
 - Do not define `DIFFBUILD`/`DLLBUILD`/`BINARYMATCHBUILD` — those enable struct-size asserts against the original binary
 - Compile with `-Wno-error=address-of-temporary -fno-strict-aliasing`
-
-## Deprecated Code
-
-- `src/vanilla/` — A JavaScript reimplementation of the engine, now **deprecated**. Do not modify, update, or read these files unless specifically asked.
-- `index.html` (root) — Loads the deprecated vanilla JS code. Not the WASM entry point.
-- The active web entry point is `src/web/index.html`, which bootstraps the WASM build.
 
 ## Git Workflow
 

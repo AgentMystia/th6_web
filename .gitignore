@@ -21,11 +21,10 @@ Thumbs.db
 .zprofile
 .zshrc
 
-# Test / coverage
-playwright-report/
-test-results/
-.nyc_output/
-coverage/
-
 # MIDI assets (large, not used in WASM build)
 assets/audio/*.mid
+
+# Extracted assets (WASM uses embedded DAT archives)
+assets/sfx/
+assets/th06-img/
+assets/pwa/
