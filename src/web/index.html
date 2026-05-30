@@ -9,6 +9,7 @@
       #wrap { display: flex; align-items: center; justify-content: center; height: 100%; position: relative; }
       /* 640x480 4:3, integer-friendly upscale; nearest keeps the pixel look. */
       #canvas { image-rendering: pixelated; background: #000; width: 640px; height: 480px; }
+      #canvas:fullscreen, #canvas:-webkit-full-screen { background: #000; }
       #status { position: fixed; left: 8px; top: 8px; color: #6f6; font: 12px monospace; white-space: pre; }
       #replay-import-btn {
         position: absolute; bottom: 12px; right: 12px; z-index: 10;
@@ -35,6 +36,18 @@
     </div>
     <div id="status">booting… (title animation takes ~15s, please wait)</div>
     <script>
+      // Inject desynchronized:true into every WebGL2 context for lower latency.
+      // Emscripten's EmscriptenWebGLContextAttributes struct doesn't expose this field,
+      // so we intercept at the JS level.
+      (function() {
+        var orig = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+          if (type === 'webgl2' || type === 'experimental-webgl2')
+            attrs = Object.assign({ desynchronized: true }, attrs);
+          return orig.call(this, type, attrs);
+        };
+      })();
+
       // --- Browser keyboard -> DirectInput scancode table (DIK_*) ---
       // The engine reads g_Th06KeyState[256] (DIK-indexed, 0x80 = pressed) via the
       // DirectInput GetDeviceState path. Map the keys TH06 actually uses.
@@ -193,9 +206,40 @@
               if (Module._sfxCtx && Module._sfxCtx.state === 'suspended') Module._sfxCtx.resume();
               if (Module._bgmAudio && Module._bgmAudio.paused && Module._bgmAudio.src) Module._bgmAudio.play().catch(function(){});
             }
-            window.addEventListener('keydown', (e) => { unlockAudio(); setKey(e, true); }, { passive: false });
+            window.addEventListener('keydown', (e) => {
+              unlockAudio();
+              if (e.altKey && e.code === 'Enter') { e.preventDefault(); toggleFullscreen(); return; }
+              setKey(e, true);
+            }, { passive: false });
             window.addEventListener('keyup', (e) => setKey(e, false), { passive: false });
             document.addEventListener('click', unlockAudio, { once: true });
+            // --- Fullscreen mode ---
+            function updateCanvasSize() {
+              var c = Module.canvas;
+              if (document.fullscreenElement === c || document.webkitFullscreenElement === c) {
+                var w = window.innerWidth, h = window.innerHeight;
+                var scale = Math.min(w / 640, h / 480);
+                c.style.width = Math.floor(640 * scale) + 'px';
+                c.style.height = Math.floor(480 * scale) + 'px';
+              } else {
+                c.style.width = '640px';
+                c.style.height = '480px';
+              }
+              setTimeout(function() { c.focus(); }, 100);
+            }
+            function toggleFullscreen() {
+              var c = Module.canvas;
+              if (document.fullscreenElement || document.webkitFullscreenElement) {
+                (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+              } else {
+                var rfs = c.requestFullscreen || c.webkitRequestFullscreen;
+                if (rfs) rfs.call(c);
+              }
+            }
+            document.addEventListener('fullscreenchange', updateCanvasSize);
+            document.addEventListener('webkitfullscreenchange', updateCanvasSize);
+            window.addEventListener('resize', updateCanvasSize);
+            Module.canvas.addEventListener('dblclick', function(e) { e.preventDefault(); toggleFullscreen(); });
             Module.canvas.focus();
             setStatus('running');
             Module.ccall('th06_run', null, [], []);
