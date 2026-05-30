@@ -900,6 +900,26 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
     worldTransformMatrix.m[3][2] = vm->pos.z;
 
+    // Skip tiles with any corner behind the camera (clip-space w <= 0).
+    // XYZRHW CPU projection has no near-plane clipping, so behind-camera
+    // vertices project to garbage screen positions causing full-screen chaos.
+    {
+        D3DXMATRIX mvp;
+        D3DXMatrixMultiply(&mvp, &worldTransformMatrix, &g_Supervisor.viewMatrix);
+        D3DXMatrixMultiply(&mvp, &mvp, &g_Supervisor.projectionMatrix);
+        D3DXVECTOR3 chk[4] = {
+            D3DXVECTOR3(-128, -128, 0), D3DXVECTOR3(128, -128, 0),
+            D3DXVECTOR3(-128,  128, 0), D3DXVECTOR3(128,  128, 0)
+        };
+        for (int i = 0; i < 4; i++)
+        {
+            float cw = chk[i].x * mvp.m[0][3] + chk[i].y * mvp.m[1][3]
+                       + chk[i].z * mvp.m[2][3] + mvp.m[3][3];
+            if (cw <= 0.0f)
+                return ZUN_SUCCESS;
+        }
+    }
+
     // Subdivide the 128×128 model-space quad into an NxN grid so that affine
     // texture interpolation across each small sub-triangle closely approximates
     // true perspective-correct mapping — eliminates the diagonal seam / flicker
