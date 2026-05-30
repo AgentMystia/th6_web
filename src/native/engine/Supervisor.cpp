@@ -762,8 +762,13 @@ EM_JS(void, webPlayBgm, (const char *path), {
     p = 'assets/audio/' + fn;
     if (!Module._bgmAudio) Module._bgmAudio = new Audio();
     var a = Module._bgmAudio;
-    a.pause(); a.src = p; a.loop = true; a.currentTime = 0; a.volume = 1;
-    a.play().catch(function(){});
+    a.pause(); a.loop = true; a.currentTime = 0; a.volume = 1;
+    a.src = p;
+    function tryPlay() {
+        a.play().catch(function(){});
+    }
+    if (a.readyState >= 3) tryPlay();
+    else a.addEventListener('canplaythrough', tryPlay, { once: true });
 });
 EM_JS(void, webStopBgm, (), {
     if (Module._bgmAudio) { Module._bgmAudio.pause(); Module._bgmAudio.currentTime = 0; }

@@ -704,7 +704,13 @@ struct GLDevice : IDirect3DDevice8
     }
     HRESULT __stdcall SetViewport(const D3DVIEWPORT8 *v) override
     {
-        if (v) { vp = *v; glViewport(v->X, v->Y, v->Width, v->Height); }
+        if (v)
+        {
+            vp = *v;
+            glViewport(v->X, v->Y, v->Width, v->Height);
+            glScissor(v->X, v->Y, v->Width, v->Height);
+            glEnable(GL_SCISSOR_TEST);
+        }
         return D3D_OK;
     }
     HRESULT __stdcall GetViewport(D3DVIEWPORT8 *v) override { if (v) *v = vp; return D3D_OK; }
