@@ -363,7 +363,6 @@ struct GLTexture : IDirect3DTexture8
     // Cached GL texture state (avoids redundant glTexParameteri calls)
     GLenum gl_magFilter = GL_LINEAR, gl_minFilter = GL_LINEAR;
     GLenum gl_wrapS = GL_REPEAT, gl_wrapT = GL_REPEAT;
-    GLSurface *surf;
     ULONG rc = 1;
 
     GLTexture(UINT W, UINT H, D3DFORMAT F) : w(W), h(H), fmt(F)
