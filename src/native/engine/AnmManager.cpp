@@ -1098,6 +1098,30 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
     float fogB = (fogColorDW & 0xFF) / 255.0f;
 
     VertexTex1DiffuseXyzrwh verts[4];
+    // Compute fog once at sprite center (0,0,0) instead of per-vertex.
+    // Sprites are small enough that fog variation across them is imperceptible.
+    DWORD foggedColor = vm->color;
+    if (fogEnable && fogRange > 0.001f)
+    {
+        D3DXVECTOR3 eyeSpace;
+        D3DXVec3TransformCoord(&eyeSpace, &D3DXVECTOR3(0, 0, 0), &worldView);
+        float eyeZ = fabsf(eyeSpace.z);
+        float fogFactor = (fogEnd - eyeZ) / fogRange;
+        if (fogFactor < 0.0f) fogFactor = 0.0f;
+        if (fogFactor > 1.0f) fogFactor = 1.0f;
+        float vr = ((vm->color >> 16) & 0xFF) / 255.0f;
+        float vg = ((vm->color >> 8) & 0xFF) / 255.0f;
+        float vb = (vm->color & 0xFF) / 255.0f;
+        float va = ((vm->color >> 24) & 0xFF) / 255.0f;
+        vr = fogR + (vr - fogR) * fogFactor;
+        vg = fogG + (vg - fogG) * fogFactor;
+        vb = fogB + (vb - fogB) * fogFactor;
+        unsigned char cr = (unsigned char)(vr * 255.0f + 0.5f);
+        unsigned char cg = (unsigned char)(vg * 255.0f + 0.5f);
+        unsigned char cb = (unsigned char)(vb * 255.0f + 0.5f);
+        unsigned char ca = (unsigned char)(va * 255.0f + 0.5f);
+        foggedColor = ((DWORD)ca << 24) | ((DWORD)cr << 16) | ((DWORD)cg << 8) | (DWORD)cb;
+    }
     for (int i = 0; i < 4; i++)
     {
         D3DXVECTOR3 s;
@@ -1105,33 +1129,7 @@ ZunResult AnmManager::Draw2(AnmVm *vm)
                         &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
                         &worldTransformMatrix);
         verts[i].position = {s.x, s.y, s.z, 1.0f};
-
-        // Apply per-vertex fog: blend vm->color with fog color based on eye-space Z.
-        if (fogEnable && fogRange > 0.001f)
-        {
-            D3DXVECTOR3 eyeSpace;
-            D3DXVec3TransformCoord(&eyeSpace, &corners[i], &worldView);
-            float eyeZ = fabsf(eyeSpace.z);
-            float fogFactor = (fogEnd - eyeZ) / fogRange;
-            if (fogFactor < 0.0f) fogFactor = 0.0f;
-            if (fogFactor > 1.0f) fogFactor = 1.0f;
-            float vr = ((vm->color >> 16) & 0xFF) / 255.0f;
-            float vg = ((vm->color >> 8) & 0xFF) / 255.0f;
-            float vb = (vm->color & 0xFF) / 255.0f;
-            float va = ((vm->color >> 24) & 0xFF) / 255.0f;
-            vr = fogR + (vr - fogR) * fogFactor;
-            vg = fogG + (vg - fogG) * fogFactor;
-            vb = fogB + (vb - fogB) * fogFactor;
-            unsigned char cr = (unsigned char)(vr * 255.0f + 0.5f);
-            unsigned char cg = (unsigned char)(vg * 255.0f + 0.5f);
-            unsigned char cb = (unsigned char)(vb * 255.0f + 0.5f);
-            unsigned char ca = (unsigned char)(va * 255.0f + 0.5f);
-            verts[i].diffuse = ((DWORD)ca << 24) | ((DWORD)cr << 16) | ((DWORD)cg << 8) | (DWORD)cb;
-        }
-        else
-        {
-            verts[i].diffuse = vm->color;
-        }
+        verts[i].diffuse = foggedColor;
     }
     {
         float minX = verts[0].position.x, maxX = verts[0].position.x;

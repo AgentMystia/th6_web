@@ -17,6 +17,15 @@
 
 using namespace th06;
 
+#ifdef __EMSCRIPTEN__
+// Bridge: call the JS function that ORs pending key-down edges into the
+// engine's DirectInput state buffer, ensuring no rapid taps are lost.
+void _th06_consume_input_edges_wasm(void)
+{
+    EM_ASM(if(window._th06_consume_input_edges_js)window._th06_consume_input_edges_js(););
+}
+#endif
+
 // Headless boot instrumentation (TH06_BOOT_TRACE): log init + early frames and
 // auto-stop, so a node run gives positive confirmation the engine is advancing.
 #ifdef TH06_BOOT_TRACE
@@ -31,6 +40,11 @@ static void th06_frame(void)
                 (int)g_Supervisor.curState, (unsigned)g_GameWindow.curFrame,
                 (int)g_EnemyManager.enemyCount);
     g_traceFrame++;
+#endif
+    // Consume pending key-down edges from JS so no rapid taps are missed.
+#ifdef __EMSCRIPTEN__
+    extern void _th06_consume_input_edges_wasm(void);
+    _th06_consume_input_edges_wasm();
 #endif
     if (g_GameWindow.isAppClosing)
     {

@@ -32,6 +32,8 @@ namespace
 EMSCRIPTEN_WEBGL_CONTEXT_HANDLE g_glCtx = 0;
 GLuint g_program = 0;
 GLuint g_vbo = 0, g_vao = 0;
+GLsizeiptr g_vboCapacity = 256 * 1024;
+GLsizeiptr g_vboWritePtr = 0;
 
 // Uniform locations
 GLint u_mode, u_viewport, u_viewportOfs, u_mvp, u_useTexture, u_tex, u_tfactor;
@@ -187,6 +189,8 @@ void initGlProgram()
     glGenVertexArrays(1, &g_vao);
     glBindVertexArray(g_vao);
     glGenBuffers(1, &g_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBufferData(GL_ARRAY_BUFFER, g_vboCapacity, NULL, GL_STREAM_DRAW);
 }
 
 void ensureGlContext()
@@ -355,6 +359,10 @@ struct GLTexture : IDirect3DTexture8
     int bpp;
     GLuint tex = 0;
     std::vector<uint8_t> shadow; // native-format pixels
+    GLSurface *surf = nullptr;
+    // Cached GL texture state (avoids redundant glTexParameteri calls)
+    GLenum gl_magFilter = GL_LINEAR, gl_minFilter = GL_LINEAR;
+    GLenum gl_wrapS = GL_REPEAT, gl_wrapT = GL_REPEAT;
     GLSurface *surf;
     ULONG rc = 1;
 
@@ -379,11 +387,12 @@ struct GLTexture : IDirect3DTexture8
     }
     void upload()
     {
-        std::vector<uint8_t> rgba((size_t)w * h * 4);
+        static std::vector<uint8_t> s_staging;
+        s_staging.resize((size_t)w * h * 4);
         for (UINT y = 0; y < h; y++)
-            nativeToRGBA8(fmt, shadow.data() + (size_t)y * w * bpp, rgba.data() + (size_t)y * w * 4, w);
+            nativeToRGBA8(fmt, shadow.data() + (size_t)y * w * bpp, s_staging.data() + (size_t)y * w * 4, w);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_staging.data());
     }
     HRESULT __stdcall QueryInterface(REFIID, void **pp) override { if (pp) *pp = this; return S_OK; }
     ULONG __stdcall AddRef() override { return ++rc; }
@@ -557,6 +566,25 @@ struct GLDevice : IDirect3DDevice8
     // render/stage state cache
     DWORD rs[256] = {0};
     DWORD tss0[64] = {0};
+    // Uniform cache — skip glUniform when value unchanged
+    struct {
+        int mode = -1;
+        float vpW = -1, vpH = -1, vpX = -1, vpY = -1;
+        int colorOp = -1, colorArg1 = -1, colorArg2 = -1;
+        int alphaOp = -1, alphaArg1 = -1, alphaArg2 = -1;
+        int alphaTest = -1, alphaFunc = -1; float alphaRef = -1;
+        int fogEnable = -1; float fogR = -1, fogG = -1, fogB = -1, fogStart = -1, fogEnd = -1;
+        int useTexture = -1, texTransform = -1;
+        float tfR = -1, tfG = -1, tfB = -1, tfA = -1;
+    } uc;
+    // GL state cache — skip GL calls when state unchanged
+    int gl_blendEnabled = -1;
+    GLenum gl_blendSrc = GL_INVALID_ENUM, gl_blendDst = GL_INVALID_ENUM;
+    int gl_depthEnabled = -1;
+    int gl_depthMask = -1;
+    GLenum gl_depthFunc = GL_INVALID_ENUM;
+    int gl_lastMode = -1; // tracks FVF mode for attribute caching
+    GLTexture *backBufferCache = nullptr; // cached to avoid per-call allocation
 
     GLDevice()
     {
@@ -612,7 +640,11 @@ struct GLDevice : IDirect3DDevice8
 #endif
     HRESULT __stdcall GetBackBuffer(UINT, D3DBACKBUFFER_TYPE, IDirect3DSurface8 **pp) override
     {
-        if (pp) *pp = (new GLTexture(640, 480, D3DFMT_A8R8G8B8))->surf;
+        if (!pp) return D3D_OK;
+        if (!backBufferCache)
+            backBufferCache = new GLTexture(640, 480, D3DFMT_A8R8G8B8);
+        backBufferCache->surf->AddRef();
+        *pp = backBufferCache->surf;
         return D3D_OK;
     }
     HRESULT __stdcall CreateTexture(UINT w, UINT h, UINT, DWORD, D3DFORMAT f, D3DPOOL, IDirect3DTexture8 **pp) override
@@ -742,7 +774,7 @@ struct GLDevice : IDirect3DDevice8
         if (m) glClear(m);
         return D3D_OK;
     }
-    HRESULT __stdcall BeginScene() override { dbgXyzDraws = 0; return D3D_OK; }
+    HRESULT __stdcall BeginScene() override { dbgXyzDraws = 0; g_vboWritePtr = 0; return D3D_OK; }
     HRESULT __stdcall EndScene() override { return D3D_OK; }
 };
 
@@ -775,18 +807,26 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
     glUseProgram(g_program);
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)vcount * stride, vtx, GL_STREAM_DRAW);
+    GLsizeiptr vtxBytes = (GLsizeiptr)vcount * stride;
+    if (g_vboWritePtr + vtxBytes > g_vboCapacity)
+    {
+        glBufferData(GL_ARRAY_BUFFER, g_vboCapacity, NULL, GL_STREAM_DRAW);
+        g_vboWritePtr = 0;
+    }
+    GLsizeiptr vtxOffset = g_vboWritePtr;
+    glBufferSubData(GL_ARRAY_BUFFER, vtxOffset, vtxBytes, vtx);
+    g_vboWritePtr += vtxBytes;
 
     // Attribute offsets depend on FVF layout (pos [diffuse] [uv]).
     int posComponents = xyzrhw ? 4 : 3;
     int off = 0;
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, posComponents, GL_FLOAT, GL_FALSE, stride, (void *)(intptr_t)off);
+    glVertexAttribPointer(0, posComponents, GL_FLOAT, GL_FALSE, stride, (void *)(intptr_t)(vtxOffset + off));
     off += posComponents * 4;
     if (hasDiffuse)
     {
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void *)(intptr_t)off);
+        glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void *)(intptr_t)(vtxOffset + off));
         off += 4;
     }
     else
@@ -797,7 +837,7 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
     if (hasTex)
     {
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void *)(intptr_t)off);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void *)(intptr_t)(vtxOffset + off));
     }
     else
     {
@@ -805,14 +845,25 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
         glVertexAttrib2f(2, 0, 0);
     }
 
-    // Uniforms
+    // Uniforms (cached — skip unchanged)
 #ifdef TH06_DEBUG_NO3D
     if (!xyzrhw) return;
 #endif
 
-    glUniform1i(u_mode, xyzrhw ? 0 : 1);
-    glUniform2f(u_viewport, (float)vp.Width, (float)vp.Height);
-    glUniform2f(u_viewportOfs, (float)vp.X, (float)vp.Y);
+    {
+        int m = xyzrhw ? 0 : 1;
+        if (uc.mode != m) { glUniform1i(u_mode, m); uc.mode = m; }
+        if (uc.vpW != (float)vp.Width || uc.vpH != (float)vp.Height)
+        {
+            glUniform2f(u_viewport, (float)vp.Width, (float)vp.Height);
+            uc.vpW = (float)vp.Width; uc.vpH = (float)vp.Height;
+        }
+        if (uc.vpX != (float)vp.X || uc.vpY != (float)vp.Y)
+        {
+            glUniform2f(u_viewportOfs, (float)vp.X, (float)vp.Y);
+            uc.vpX = (float)vp.X; uc.vpY = (float)vp.Y;
+        }
+    }
     if (!xyzrhw)
     {
         D3DXMATRIX mvp, wv;
@@ -821,85 +872,111 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
         glUniformMatrix4fv(u_mvp, 1, GL_TRUE, &mvp._11);
         glUniformMatrix4fv(u_mv, 1, GL_TRUE, &wv._11);
         int ttf = (int)tss0[D3DTSS_TEXTURETRANSFORMFLAGS];
-        glUniform1i(u_texTransform, ttf);
+        if (uc.texTransform != ttf) { glUniform1i(u_texTransform, ttf); uc.texTransform = ttf; }
         if (ttf)
             glUniformMatrix4fv(u_texMatrix, 1, GL_TRUE, &texMatrix._11);
     }
     else
     {
-        glUniform1i(u_texTransform, 0);
+        if (uc.texTransform != 0) { glUniform1i(u_texTransform, 0); uc.texTransform = 0; }
     }
     // Fog (3D only; D3DRS_FOGSTART/FOGEND are float bits stored as DWORD)
-    bool fogOn = !xyzrhw && rs[D3DRS_FOGENABLE];
-    glUniform1i(u_fogEnable, fogOn ? 1 : 0);
-    if (fogOn)
     {
-        DWORD fc = rs[D3DRS_FOGCOLOR];
-        glUniform4f(u_fogColor, ((fc >> 16) & 0xFF) / 255.0f, ((fc >> 8) & 0xFF) / 255.0f, (fc & 0xFF) / 255.0f, 1.0f);
-        float fs = *(float *)&rs[D3DRS_FOGSTART], fe = *(float *)&rs[D3DRS_FOGEND];
-        glUniform1f(u_fogStart, fs);
-        glUniform1f(u_fogEnd, fe);
+        bool fogOn = !xyzrhw && rs[D3DRS_FOGENABLE];
+        int fogI = fogOn ? 1 : 0;
+        if (uc.fogEnable != fogI) { glUniform1i(u_fogEnable, fogI); uc.fogEnable = fogI; }
+        if (fogOn)
+        {
+            DWORD fc = rs[D3DRS_FOGCOLOR];
+            float fr = ((fc >> 16) & 0xFF) / 255.0f, fg = ((fc >> 8) & 0xFF) / 255.0f;
+            float fb = (fc & 0xFF) / 255.0f;
+            float fs = *(float *)&rs[D3DRS_FOGSTART], fe = *(float *)&rs[D3DRS_FOGEND];
+            if (uc.fogR != fr || uc.fogG != fg || uc.fogB != fb)
+            {
+                glUniform4f(u_fogColor, fr, fg, fb, 1.0f);
+                uc.fogR = fr; uc.fogG = fg; uc.fogB = fb;
+            }
+            if (uc.fogStart != fs) { glUniform1f(u_fogStart, fs); uc.fogStart = fs; }
+            if (uc.fogEnd != fe) { glUniform1f(u_fogEnd, fe); uc.fogEnd = fe; }
+        }
     }
-    glUniform1i(u_useTexture, (hasTex && boundTex) ? 1 : 0);
+    {
+        int ut = (hasTex && boundTex) ? 1 : 0;
+        if (uc.useTexture != ut) { glUniform1i(u_useTexture, ut); uc.useTexture = ut; }
+    }
     if (hasTex && boundTex)
     {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, boundTex->tex);
-        // Apply per-draw texture filter + address mode from SetTextureStageState.
+        // Apply per-draw texture filter + address mode (cached per-texture).
         GLenum magF = (tss0[D3DTSS_MAGFILTER] == D3DTEXF_POINT) ? GL_NEAREST : GL_LINEAR;
         GLenum minF = (tss0[D3DTSS_MINFILTER] == D3DTEXF_POINT) ? GL_NEAREST : GL_LINEAR;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magF);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minF);
+        if (boundTex->gl_magFilter != magF) { glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magF); boundTex->gl_magFilter = magF; }
+        if (boundTex->gl_minFilter != minF) { glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minF); boundTex->gl_minFilter = minF; }
         GLenum wrapS = (tss0[D3DTSS_ADDRESSU] == D3DTADDRESS_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
         GLenum wrapT = (tss0[D3DTSS_ADDRESSV] == D3DTADDRESS_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+        if (boundTex->gl_wrapS != wrapS) { glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS); boundTex->gl_wrapS = wrapS; }
+        if (boundTex->gl_wrapT != wrapT) { glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT); boundTex->gl_wrapT = wrapT; }
     }
-    DWORD tf = rs[D3DRS_TEXTUREFACTOR];
-    glUniform4f(u_tfactor, ((tf >> 16) & 0xFF) / 255.0f, ((tf >> 8) & 0xFF) / 255.0f, (tf & 0xFF) / 255.0f,
-                ((tf >> 24) & 0xFF) / 255.0f);
-    glUniform1i(u_colorOp, (int)tss0[D3DTSS_COLOROP]);
-    glUniform1i(u_colorArg1, (int)tss0[D3DTSS_COLORARG1] & 3);
-    glUniform1i(u_colorArg2, (int)tss0[D3DTSS_COLORARG2] & 3);
-    glUniform1i(u_alphaOp, (int)tss0[D3DTSS_ALPHAOP]);
-    glUniform1i(u_alphaArg1, (int)tss0[D3DTSS_ALPHAARG1] & 3);
-    glUniform1i(u_alphaArg2, (int)tss0[D3DTSS_ALPHAARG2] & 3);
-    glUniform1i(u_alphaTest, rs[D3DRS_ALPHATESTENABLE] ? 1 : 0);
-    glUniform1i(u_alphaFunc, (int)rs[D3DRS_ALPHAFUNC]);
-    glUniform1f(u_alphaRef, rs[D3DRS_ALPHAREF] / 255.0f);
-
-    // Blend
-    if (rs[D3DRS_ALPHABLENDENABLE])
     {
-        glEnable(GL_BLEND);
-        glBlendFunc(d3dBlendToGl(rs[D3DRS_SRCBLEND]), d3dBlendToGl(rs[D3DRS_DESTBLEND]));
-    }
-    else
-        glDisable(GL_BLEND);
-
-    // Depth — use the engine's actual ZFUNC (critical: Gui sets D3DCMP_ALWAYS for HUD draws)
-    if (rs[D3DRS_ZENABLE])
-    {
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(rs[D3DRS_ZWRITEENABLE] ? GL_TRUE : GL_FALSE);
-        switch (rs[D3DRS_ZFUNC])
+        DWORD tf = rs[D3DRS_TEXTUREFACTOR];
+        float tfr = ((tf >> 16) & 0xFF) / 255.0f, tfg = ((tf >> 8) & 0xFF) / 255.0f;
+        float tfb = (tf & 0xFF) / 255.0f, tfa = ((tf >> 24) & 0xFF) / 255.0f;
+        if (uc.tfR != tfr || uc.tfG != tfg || uc.tfB != tfb || uc.tfA != tfa)
         {
-        case D3DCMP_ALWAYS:
-            glDepthFunc(GL_ALWAYS);
-            break;
-        case D3DCMP_GREATEREQUAL:
-            glDepthFunc(GL_GEQUAL);
-            break;
-        case D3DCMP_LESS:
-            glDepthFunc(GL_LESS);
-            break;
-        default:
-            glDepthFunc(GL_LEQUAL);
-            break;
+            glUniform4f(u_tfactor, tfr, tfg, tfb, tfa);
+            uc.tfR = tfr; uc.tfG = tfg; uc.tfB = tfb; uc.tfA = tfa;
         }
     }
-    else
-        glDisable(GL_DEPTH_TEST);
+    {
+        int v = (int)tss0[D3DTSS_COLOROP];       if (uc.colorOp != v)   { glUniform1i(u_colorOp, v);   uc.colorOp = v; }
+        v = (int)tss0[D3DTSS_COLORARG1] & 3;     if (uc.colorArg1 != v) { glUniform1i(u_colorArg1, v); uc.colorArg1 = v; }
+        v = (int)tss0[D3DTSS_COLORARG2] & 3;     if (uc.colorArg2 != v) { glUniform1i(u_colorArg2, v); uc.colorArg2 = v; }
+        v = (int)tss0[D3DTSS_ALPHAOP];            if (uc.alphaOp != v)   { glUniform1i(u_alphaOp, v);   uc.alphaOp = v; }
+        v = (int)tss0[D3DTSS_ALPHAARG1] & 3;     if (uc.alphaArg1 != v) { glUniform1i(u_alphaArg1, v); uc.alphaArg1 = v; }
+        v = (int)tss0[D3DTSS_ALPHAARG2] & 3;     if (uc.alphaArg2 != v) { glUniform1i(u_alphaArg2, v); uc.alphaArg2 = v; }
+        v = rs[D3DRS_ALPHATESTENABLE] ? 1 : 0;   if (uc.alphaTest != v) { glUniform1i(u_alphaTest, v); uc.alphaTest = v; }
+        v = (int)rs[D3DRS_ALPHAFUNC];             if (uc.alphaFunc != v) { glUniform1i(u_alphaFunc, v); uc.alphaFunc = v; }
+        float ar = rs[D3DRS_ALPHAREF] / 255.0f;   if (uc.alphaRef != ar) { glUniform1f(u_alphaRef, ar); uc.alphaRef = ar; }
+    }
+
+    // Blend (cached)
+    {
+        int wantBlend = rs[D3DRS_ALPHABLENDENABLE] ? 1 : 0;
+        if (gl_blendEnabled != wantBlend)
+        {
+            if (wantBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+            gl_blendEnabled = wantBlend;
+        }
+        if (wantBlend)
+        {
+            GLenum src = d3dBlendToGl(rs[D3DRS_SRCBLEND]), dst = d3dBlendToGl(rs[D3DRS_DESTBLEND]);
+            if (gl_blendSrc != src || gl_blendDst != dst) { glBlendFunc(src, dst); gl_blendSrc = src; gl_blendDst = dst; }
+        }
+    }
+
+    // Depth (cached) — use the engine's actual ZFUNC (critical: Gui sets D3DCMP_ALWAYS for HUD draws)
+    {
+        if (rs[D3DRS_ZENABLE])
+        {
+            if (gl_depthEnabled != 1) { glEnable(GL_DEPTH_TEST); gl_depthEnabled = 1; }
+            int dm = rs[D3DRS_ZWRITEENABLE] ? 1 : 0;
+            if (gl_depthMask != dm) { glDepthMask(dm ? GL_TRUE : GL_FALSE); gl_depthMask = dm; }
+            GLenum df;
+            switch (rs[D3DRS_ZFUNC])
+            {
+            case D3DCMP_ALWAYS:      df = GL_ALWAYS;  break;
+            case D3DCMP_GREATEREQUAL: df = GL_GEQUAL; break;
+            case D3DCMP_LESS:        df = GL_LESS;    break;
+            default:                 df = GL_LEQUAL;  break;
+            }
+            if (gl_depthFunc != df) { glDepthFunc(df); gl_depthFunc = df; }
+        }
+        else
+        {
+            if (gl_depthEnabled != 0) { glDisable(GL_DEPTH_TEST); gl_depthEnabled = 0; }
+        }
+    }
 
     GLenum mode = (prim == D3DPT_TRIANGLELIST) ? GL_TRIANGLES : GL_TRIANGLE_STRIP;
     glDrawArrays(mode, 0, vcount);

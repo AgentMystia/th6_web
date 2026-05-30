@@ -164,12 +164,30 @@
             setStatus('starting…');
             // Feed keyboard into the engine's DirectInput state buffer.
             const keyAddr = Module._th06_key_state_ptr ? Module._th06_key_state_ptr() : 0;
+            const pendingEdges = new Uint8Array(256); // tracks key-down events between engine frames
             function setKey(e, down) {
               const dik = DIK[e.code];
               if (dik === undefined) return;
               e.preventDefault();
-              if (keyAddr) Module.HEAPU8[keyAddr + dik] = down ? 0x80 : 0x00;
+              if (keyAddr) {
+                if (down) {
+                  Module.HEAPU8[keyAddr + dik] = 0x80;
+                  pendingEdges[dik] = 1;
+                } else {
+                  Module.HEAPU8[keyAddr + dik] = 0x00;
+                }
+              }
             }
+            // Called at the start of each engine frame to ensure no key-down was missed.
+            window._th06_consume_input_edges_js = function() {
+              if (!keyAddr) return;
+              for (var i = 0; i < 256; i++) {
+                if (pendingEdges[i]) {
+                  Module.HEAPU8[keyAddr + i] = 0x80;
+                  pendingEdges[i] = 0;
+                }
+              }
+            };
             // Unlock Web Audio on first user interaction (browser autoplay policy).
             function unlockAudio() {
               if (Module._sfxCtx && Module._sfxCtx.state === 'suspended') Module._sfxCtx.resume();
