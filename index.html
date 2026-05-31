@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>東方紅魔郷 ~ the Embodiment of Scarlet Devil (WASM)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      #wrap { display: flex; align-items: center; justify-content: center; height: 100%; position: relative; }
+      /* 640x480 4:3, integer-friendly upscale; nearest keeps the pixel look. */
+      #canvas { image-rendering: pixelated; background: #000; width: 640px; height: 480px; }
+      #canvas:fullscreen, #canvas:-webkit-full-screen { background: #000; }
+      #status { position: fixed; left: 8px; top: 8px; color: #6f6; font: 12px monospace; white-space: pre; }
+      #replay-import-btn {
+        position: absolute; bottom: 12px; right: 12px; z-index: 10;
+        padding: 6px 14px; font: 12px monospace;
+        background: rgba(80,60,30,0.72); color: #ffe6a8; border: 1px solid rgba(255,220,140,0.4);
+        border-radius: 4px; cursor: pointer; user-select: none;
+        transition: background 0.15s, opacity 0.3s;
+      }
+      #replay-import-btn:hover { background: rgba(120,90,40,0.88); }
+      #replay-import-btn:active { background: rgba(160,120,50,0.95); }
+      #replay-import-feedback {
+        position: absolute; bottom: 48px; right: 12px; z-index: 10;
+        padding: 4px 10px; font: 11px monospace;
+        background: rgba(0,0,0,0.7); color: #6f6; border-radius: 3px;
+        pointer-events: none; opacity: 0; transition: opacity 0.4s;
+      }
+      #replay-import-feedback.show { opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+      <button id="replay-import-btn" type="button">Import Replay</button>
+      <div id="replay-import-feedback"></div>
+    </div>
+    <div id="status">booting… (title animation takes ~15s, please wait)</div>
+    <script>
+      // Inject desynchronized:true into every WebGL2 context for lower latency.
+      // Emscripten's EmscriptenWebGLContextAttributes struct doesn't expose this field,
+      // so we intercept at the JS level.
+      (function() {
+        var orig = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+          if (type === 'webgl2' || type === 'experimental-webgl2')
+            attrs = Object.assign({ desynchronized: true }, attrs);
+          return orig.call(this, type, attrs);
+        };
+      })();
+
+      // --- Browser keyboard -> DirectInput scancode table (DIK_*) ---
+      // The engine reads g_Th06KeyState[256] (DIK-indexed, 0x80 = pressed) via the
+      // DirectInput GetDeviceState path. Map the keys TH06 actually uses.
+      const DIK = {
+        Escape: 0x01, Digit1: 0x02, KeyQ: 0x10, KeyS: 0x1f, Enter: 0x1c,
+        ControlLeft: 0x1d, ControlRight: 0x9d, ShiftLeft: 0x2a, ShiftRight: 0x36,
+        KeyZ: 0x2c, KeyX: 0x2d, Home: 0xc7,
+        ArrowUp: 0xc8, ArrowLeft: 0xcb, ArrowRight: 0xcd, ArrowDown: 0xd0,
+        Numpad1: 0x4f, Numpad2: 0x50, Numpad3: 0x51, Numpad4: 0x4b,
+        Numpad6: 0x4d, Numpad7: 0x47, Numpad8: 0x48, Numpad9: 0x49,
+      };
+
+      const statusEl = document.getElementById('status');
+      function setStatus(t) { statusEl.textContent = t; }
+
+      var Module = {
+        canvas: document.getElementById('canvas'),
+        print: (t) => console.log('[stdout] ' + t),
+        printErr: (t) => console.log('[stderr] ' + t),
+        onAbort: (w) => console.log('[abort] ' + w),
+        onRuntimeInitialized: async function () {
+          try {
+            // Load Japanese font for GDI text rendering (spellcard names, dialogue)
+            try {
+              var jf = new FontFace('TH06Font', "url(th06font.ttf)");
+              var loaded = await jf.load();
+              document.fonts.add(loaded);
+            } catch(e) { console.log('[boot] font load skipped: ' + e); }
+            // If DATs are not embedded in WASM, try fetching from server.
+            const dats = ['th06_IN.DAT', 'th06_ST.DAT', 'th06_ED.DAT', 'th06_CM.DAT', 'th06_TL.DAT', 'th06_MD.DAT'];
+            const embedded = Module.FS.analyzePath(dats[0]).exists || Module.FS.analyzePath('/' + dats[0]).exists;
+            if (!embedded) {
+              setStatus('downloading assets…');
+              try {
+                for (const d of dats) {
+                  const r = await fetch(d);
+                  if (!r.ok) throw new Error(r.status);
+                  Module.FS.writeFile(d, new Uint8Array(await r.arrayBuffer()));
+                }
+              } catch(e) {
+                setStatus('error: DAT assets not found. Provide th06_*.DAT files.');
+                console.log('[boot] DAT fetch failed: ' + e);
+                return;
+              }
+            }
+            // 加载判定点贴图（低速模式显示）
+            try {
+                const hbr = await fetch('hitbox.png');
+                if (hbr.ok) Module.FS.writeFile('hitbox.png', new Uint8Array(await hbr.arrayBuffer()));
+            } catch(e) { console.log('[boot] hitbox.png fetch skipped: ' + e); }
+
+            // --- Replay import support ---
+            // Write imported replays to numbered slots th6_XX.rpy (10-15) so the engine
+            // finds them via its straightforward sprintf+fopen scan, bypassing the
+            // chdir+FindFirstFileA path that may not work reliably in MEMFS.
+            try { Module.FS.mkdir('/replay'); } catch(e) {}
+            var replaySlot = 10;
+            var replayInput = document.createElement('input');
+            replayInput.type = 'file';
+            replayInput.accept = '.rpy';
+            replayInput.multiple = true;
+            replayInput.style.display = 'none';
+            document.body.appendChild(replayInput);
+            var feedbackEl = document.getElementById('replay-import-feedback');
+            function showFeedback(msg, ms) {
+              if (!feedbackEl) return;
+              feedbackEl.textContent = msg;
+              feedbackEl.classList.add('show');
+              clearTimeout(feedbackEl._timer);
+              feedbackEl._timer = setTimeout(function() { feedbackEl.classList.remove('show'); }, ms || 2500);
+            }
+            function nextSlot() {
+              for (var s = replaySlot; s <= 15; s++) {
+                var p = '/replay/th6_' + String(s).padStart(2, '0') + '.rpy';
+                try { if (!Module.FS.analyzePath(p).exists) { replaySlot = s + 1; return p; } } catch(e) {}
+              }
+              return null;
+            }
+            replayInput.addEventListener('change', function() {
+              var files = replayInput.files;
+              if (!files || !files.length) return;
+              var imported = 0, skipped = 0, total = files.length;
+              var done = 0;
+              Array.from(files).forEach(function(file) {
+                var reader = new FileReader();
+                reader.onload = function(ev) {
+                  done++;
+                  var buf = new Uint8Array(ev.target.result);
+                  if (buf.length < 4 || buf[0] !== 0x54 || buf[1] !== 0x36 || buf[2] !== 0x52 || buf[3] !== 0x50) {
+                    skipped++;
+                    console.log('[replay] skipped ' + file.name + ': not a valid T6RP file');
+                  } else {
+                    var slot = nextSlot();
+                    if (!slot) {
+                      skipped++;
+                      console.log('[replay] skipped ' + file.name + ': all 15 replay slots occupied');
+                    } else {
+                      Module.FS.writeFile(slot, buf);
+                      imported++;
+                      console.log('[replay] imported ' + file.name + ' → ' + slot);
+                    }
+                  }
+                  if (done === total) {
+                    var msg = imported + ' replay(s) imported';
+                    if (skipped) msg += ', ' + skipped + ' skipped';
+                    showFeedback(msg, 3000);
+                  }
+                };
+                reader.readAsArrayBuffer(file);
+              });
+              replayInput.value = '';
+            });
+            var importBtn = document.getElementById('replay-import-btn');
+            if (importBtn) {
+              importBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                replayInput.click();
+                setTimeout(function() { Module.canvas.focus(); }, 100);
+              });
+            }
+            // --- End replay import ---
+            setStatus('init…');
+            console.log('[boot] DATs embedded=' + embedded + ', calling th06_init...');
+            const rc = Module.ccall('th06_init', 'number', [], []);
+            console.log('[boot] th06_init returned ' + rc);
+            if (rc !== 0) { setStatus('init failed rc=' + rc); return; }
+            setStatus('starting…');
+            // Feed keyboard into the engine's DirectInput state buffer.
+            const keyAddr = Module._th06_key_state_ptr ? Module._th06_key_state_ptr() : 0;
+            const pendingEdges = new Uint8Array(256); // tracks key-down events between engine frames
+            function setKey(e, down) {
+              e.preventDefault();
+              e.stopPropagation();
+              const dik = DIK[e.code];
+              if (dik === undefined) return;
+              if (keyAddr) {
+                if (down) {
+                  Module.HEAPU8[keyAddr + dik] = 0x80;
+                  pendingEdges[dik] = 1;
+                } else {
+                  Module.HEAPU8[keyAddr + dik] = 0x00;
+                }
+              }
+            }
+            // Called at the start of each engine frame to ensure no key-down was missed.
+            window._th06_consume_input_edges_js = function() {
+              if (!keyAddr) return;
+              for (var i = 0; i < 256; i++) {
+                if (pendingEdges[i]) {
+                  Module.HEAPU8[keyAddr + i] = 0x80;
+                  pendingEdges[i] = 0;
+                }
+              }
+            };
+            // Unlock Web Audio on first user interaction (browser autoplay policy).
+            function unlockAudio() {
+              if (Module._sfxCtx && Module._sfxCtx.state === 'suspended') Module._sfxCtx.resume();
+              if (Module._bgmAudio && Module._bgmAudio.paused && Module._bgmAudio.src) Module._bgmAudio.play().catch(function(){});
+            }
+            window.addEventListener('keydown', (e) => {
+              unlockAudio();
+              if (e.altKey && e.code === 'Enter') { e.preventDefault(); toggleFullscreen(); return; }
+              setKey(e, true);
+            }, { passive: false });
+            window.addEventListener('keyup', (e) => setKey(e, false), { passive: false });
+            document.addEventListener('click', unlockAudio, { once: true });
+            // Clear all key state on focus loss to prevent stuck keys
+            Module.canvas.addEventListener('blur', function() {
+              if (keyAddr) {
+                for (var i = 0; i < 256; i++)
+                  Module.HEAPU8[keyAddr + i] = 0x00;
+              }
+              pendingEdges.fill(0);
+            });
+            // --- Fullscreen mode ---
+            function updateCanvasSize() {
+              var c = Module.canvas;
+              if (document.fullscreenElement === c || document.webkitFullscreenElement === c) {
+                var w = window.innerWidth, h = window.innerHeight;
+                var scale = Math.min(w / 640, h / 480);
+                c.style.width = Math.floor(640 * scale) + 'px';
+                c.style.height = Math.floor(480 * scale) + 'px';
+              } else {
+                c.style.width = '640px';
+                c.style.height = '480px';
+              }
+              setTimeout(function() { c.focus(); }, 100);
+            }
+            function toggleFullscreen() {
+              var c = Module.canvas;
+              if (document.fullscreenElement || document.webkitFullscreenElement) {
+                (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+              } else {
+                var rfs = c.requestFullscreen || c.webkitRequestFullscreen;
+                if (rfs) rfs.call(c);
+              }
+            }
+            document.addEventListener('fullscreenchange', updateCanvasSize);
+            document.addEventListener('webkitfullscreenchange', updateCanvasSize);
+            window.addEventListener('resize', updateCanvasSize);
+            Module.canvas.addEventListener('dblclick', function(e) { e.preventDefault(); toggleFullscreen(); });
+            Module.canvas.focus();
+            setStatus('running');
+            Module.ccall('th06_run', null, [], []);
+          } catch (err) {
+            console.log('[boot] ERROR ' + (err && err.stack || err));
+            setStatus('error: ' + err);
+          }
+        },
+      };
+    </script>
+    <script src="th06.js?v=2"></script>
+  </body>
+</html>
