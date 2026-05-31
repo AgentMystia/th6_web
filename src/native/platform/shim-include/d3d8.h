@@ -84,6 +84,8 @@ struct IDirect3DDevice8 : public IUnknown
                                     DWORD Stencil) = 0;
     virtual HRESULT __stdcall BeginScene() = 0;
     virtual HRESULT __stdcall EndScene() = 0;
+    virtual void BeginBatch() = 0;
+    virtual void EndBatch() = 0;
 };
 
 struct IDirect3D8 : public IUnknown

@@ -808,7 +808,7 @@ struct GLDevice : IDirect3DDevice8
     GLTexture *batchTex = nullptr;
     DWORD batchBlendSrc = 0, batchBlendDst = 0;
     UINT batchStride = 0;
-    void BeginBatch() { batchActive = true; batchUsed = 0; }
+    void BeginBatch() override { batchActive = true; batchUsed = 0; }
     void FlushBatch()
     {
         if (batchUsed == 0) return;
@@ -823,7 +823,7 @@ struct GLDevice : IDirect3DDevice8
         rs[D3DRS_SRCBLEND] = savedSrc; rs[D3DRS_DESTBLEND] = savedDst;
         batchUsed = 0;
     }
-    void EndBatch() { FlushBatch(); batchActive = false; }
+    void EndBatch() override { FlushBatch(); batchActive = false; }
     int dbgXyzDraws = 0;  // count XYZ draws per frame for debug
     HRESULT __stdcall Clear(DWORD, const D3DRECT *, DWORD flags, D3DCOLOR color, float z, DWORD) override
     {
