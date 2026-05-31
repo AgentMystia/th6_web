@@ -32,7 +32,7 @@ namespace
 EMSCRIPTEN_WEBGL_CONTEXT_HANDLE g_glCtx = 0;
 GLuint g_program = 0;
 GLuint g_vbo = 0, g_vao = 0;
-GLsizeiptr g_vboCapacity = 256 * 1024;
+GLsizeiptr g_vboCapacity = 2048 * 1024;
 GLsizeiptr g_vboWritePtr = 0;
 
 // Uniform locations
@@ -751,12 +751,79 @@ struct GLDevice : IDirect3DDevice8
     }
     HRESULT __stdcall DrawPrimitiveUP(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx, UINT stride) override
     {
+        if (batchActive)
+        {
+            if (batchUsed > 0 && (fvf != batchFvf || boundTex != batchTex
+                || rs[D3DRS_SRCBLEND] != batchBlendSrc || rs[D3DRS_DESTBLEND] != batchBlendDst))
+                FlushBatch();
+            if (batchUsed == 0)
+            {
+                if (!batchBuf) batchBuf = (uint8_t*)malloc(batchCap);
+                batchFvf = fvf;
+                batchTex = boundTex;
+                batchBlendSrc = rs[D3DRS_SRCBLEND];
+                batchBlendDst = rs[D3DRS_DESTBLEND];
+                batchStride = stride;
+            }
+            UINT vcount = (prim == D3DPT_TRIANGLESTRIP) ? primCount + 2
+                          : (prim == D3DPT_TRIANGLELIST) ? primCount * 3 : primCount + 1;
+            const uint8_t *src = (const uint8_t*)vtx;
+            if (prim == D3DPT_TRIANGLESTRIP)
+            {
+                // Convert strip to triangle list (no face culling in this engine)
+                for (UINT i = 2; i < vcount; i++)
+                {
+                    if (batchUsed + stride * 3 > batchCap) FlushBatch();
+                    memcpy(batchBuf + batchUsed, src + (i-2) * stride, stride); batchUsed += stride;
+                    memcpy(batchBuf + batchUsed, src + (i-1) * stride, stride); batchUsed += stride;
+                    memcpy(batchBuf + batchUsed, src + i * stride, stride);       batchUsed += stride;
+                }
+            }
+            else if (prim == D3DPT_TRIANGLELIST)
+            {
+                size_t bytes = (size_t)vcount * stride;
+                if (batchUsed + bytes > batchCap) FlushBatch();
+                memcpy(batchBuf + batchUsed, src, bytes);
+                batchUsed += bytes;
+            }
+            else
+            {
+                FlushBatch();
+                drawArrays(prim, primCount, vtx, stride);
+            }
+            return D3D_OK;
+        }
         drawArrays(prim, primCount, vtx, stride);
         return D3D_OK;
     }
     void drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx, UINT stride);
     GLVertexBuffer *streamVB = nullptr;
     UINT streamStride = 0;
+    // Batch mode state
+    bool batchActive = false;
+    uint8_t *batchBuf = nullptr;
+    size_t batchUsed = 0;
+    size_t batchCap = 2 * 1024 * 1024;
+    DWORD batchFvf = 0;
+    GLTexture *batchTex = nullptr;
+    DWORD batchBlendSrc = 0, batchBlendDst = 0;
+    UINT batchStride = 0;
+    void BeginBatch() { batchActive = true; batchUsed = 0; }
+    void FlushBatch()
+    {
+        if (batchUsed == 0) return;
+        DWORD savedFvf = fvf;
+        GLTexture *savedTex = boundTex;
+        DWORD savedSrc = rs[D3DRS_SRCBLEND], savedDst = rs[D3DRS_DESTBLEND];
+        fvf = batchFvf; boundTex = batchTex;
+        rs[D3DRS_SRCBLEND] = batchBlendSrc; rs[D3DRS_DESTBLEND] = batchBlendDst;
+        UINT primCount = (UINT)(batchUsed / batchStride / 3);
+        drawArrays(D3DPT_TRIANGLELIST, primCount, batchBuf, batchStride);
+        fvf = savedFvf; boundTex = savedTex;
+        rs[D3DRS_SRCBLEND] = savedSrc; rs[D3DRS_DESTBLEND] = savedDst;
+        batchUsed = 0;
+    }
+    void EndBatch() { FlushBatch(); batchActive = false; }
     int dbgXyzDraws = 0;  // count XYZ draws per frame for debug
     HRESULT __stdcall Clear(DWORD, const D3DRECT *, DWORD flags, D3DCOLOR color, float z, DWORD) override
     {
@@ -815,6 +882,7 @@ void GLDevice::drawArrays(D3DPRIMITIVETYPE prim, UINT primCount, const void *vtx
     GLsizeiptr vtxBytes = (GLsizeiptr)vcount * stride;
     if (g_vboWritePtr + vtxBytes > g_vboCapacity)
     {
+        glFinish();
         glBufferData(GL_ARRAY_BUFFER, g_vboCapacity, NULL, GL_STREAM_DRAW);
         g_vboWritePtr = 0;
     }

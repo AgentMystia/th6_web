@@ -1155,6 +1155,7 @@ ChainCallbackResult BulletManager::OnDraw(BulletManager *mgr)
 
     if (g_Supervisor.hasD3dHardwareVertexProcessing)
     {
+        g_Supervisor.d3dDevice->BeginBatch();
         for (curBullet1 = &mgr->bullets[0], idx = 0; idx < ARRAY_SIZE_SIGNED(mgr->bullets); idx++, curBullet1++)
         {
             if (curBullet1->state == 0)
@@ -1210,9 +1211,11 @@ ChainCallbackResult BulletManager::OnDraw(BulletManager *mgr)
                 BulletManager::DrawBullet(curBullet1);
             }
         }
+        g_Supervisor.d3dDevice->EndBatch();
     }
     else
     {
+        g_Supervisor.d3dDevice->BeginBatch();
         for (curBullet2 = &mgr->bullets[0], idx = 0; idx < ARRAY_SIZE_SIGNED(mgr->bullets); idx++, curBullet2++)
         {
             if (curBullet2->state == 0)
@@ -1268,6 +1271,7 @@ ChainCallbackResult BulletManager::OnDraw(BulletManager *mgr)
                 BulletManager::DrawBulletNoHwVertex(curBullet2);
             }
         }
+        g_Supervisor.d3dDevice->EndBatch();
     }
 
     g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);

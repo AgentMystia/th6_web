@@ -179,9 +179,10 @@
             const keyAddr = Module._th06_key_state_ptr ? Module._th06_key_state_ptr() : 0;
             const pendingEdges = new Uint8Array(256); // tracks key-down events between engine frames
             function setKey(e, down) {
+              e.preventDefault();
+              e.stopPropagation();
               const dik = DIK[e.code];
               if (dik === undefined) return;
-              e.preventDefault();
               if (keyAddr) {
                 if (down) {
                   Module.HEAPU8[keyAddr + dik] = 0x80;
@@ -213,6 +214,14 @@
             }, { passive: false });
             window.addEventListener('keyup', (e) => setKey(e, false), { passive: false });
             document.addEventListener('click', unlockAudio, { once: true });
+            // Clear all key state on focus loss to prevent stuck keys
+            Module.canvas.addEventListener('blur', function() {
+              if (keyAddr) {
+                for (var i = 0; i < 256; i++)
+                  Module.HEAPU8[keyAddr + i] = 0x00;
+              }
+              pendingEdges.fill(0);
+            });
             // --- Fullscreen mode ---
             function updateCanvasSize() {
               var c = Module.canvas;
