@@ -11,6 +11,8 @@ interface TestHook {
   snapshot(): Record<string, unknown>;
   pixelAt(x: number, y: number): number[];
   setPlayer(x: number, y: number): void;
+  setPower(v: number): void;
+  inject(held: string[], pressed: string[]): void;
   damageBoss(n: number): void;
 }
 
@@ -34,7 +36,8 @@ async function boot(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const difficulty = Math.min(3, Math.max(0, Number(params.get('difficulty') ?? 1)));
 
-  const scene = new StageScene(assets, audio, difficulty);
+  const character = (params.get('shot') ?? 'reimuA') as never;
+  const scene = new StageScene(assets, audio, difficulty, character);
   audio.preloadBgm(['th07_02', 'th07_03']);
   audio.playBgm('th07_02');
 
@@ -61,7 +64,9 @@ async function boot(): Promise<void> {
         bossHp: scene.bossActive?.hp ?? null,
         spellName: scene.spellName,
         rngSeed: scene.rng.seed,
-        player: { ...scene.player },
+        player: { x: scene.playerObj.x, y: scene.playerObj.y, lives: scene.playerObj.lives, bombs: scene.playerObj.bombs, power: scene.playerObj.power },
+        graze: scene.graze,
+        playerBullets: scene.playerBullets.length,
         bulletDump: scene.enemyBullets.slice(0, 5).map((b) => ({
           x: Math.round(b.x),
           y: Math.round(b.y),
@@ -84,8 +89,14 @@ async function boot(): Promise<void> {
       }),
       pixelAt: (x: number, y: number) => Array.from(renderer.ctx.getImageData(x, y, 1, 1).data),
       setPlayer: (x: number, y: number) => {
-        scene.player.x = x;
-        scene.player.y = y;
+        scene.playerObj.x = x;
+        scene.playerObj.y = y;
+      },
+      setPower: (v: number) => {
+        scene.playerObj.power = v;
+      },
+      inject: (held: string[], pressed: string[]) => {
+        input.inject(held as never, pressed as never);
       },
       damageBoss: (n: number) => {
         if (scene.bossActive) scene.bossActive.hp -= n;

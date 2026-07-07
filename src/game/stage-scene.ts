@@ -8,21 +8,27 @@ import type { GameAssets } from './assets';
 import { AnmRunner } from '../formats/anm';
 import { TH07_DATA } from '../data/th07-data';
 import type { AudioBus } from '../audio/audio';
+import { Player, type CharacterId, type PlayerBullet } from './player';
 
 // Stage host. At the M3 milestone this runs the full stage 1 timeline with a
 // movable player stub (no collision yet) so ECL patterns can be verified.
 
-const ITEM_COLORS: Record<ItemType, string> = {
-  power: '#e33',
-  point: '#36c',
-  bigPower: '#f44',
-  bomb: '#3a3',
-  fullPower: '#ff0',
-  life: '#e5e',
-  cherry: '#f9c',
-  bigCherry: '#f6a',
-  pointBullet: '#88f'
+// Item sprites live in etama entry1 (etama2.png); global sprite ids 64+.
+const ITEM_SPRITES: Record<ItemType, number> = {
+  power: 68,
+  point: 69,
+  bigPower: 70,
+  bomb: 71,
+  fullPower: 72,
+  life: 73,
+  cherry: 76, // pink petal
+  bigCherry: 76,
+  pointBullet: 77 // cancel-item triangle
 };
+
+// Per-frame damage cap for a single enemy, from the TH06 engine family; the
+// ECL op 142 parameter appears related but is not yet confirmed (TH07-TODO).
+const ENEMY_FRAME_DAMAGE_CAP = 70;
 
 export class StageScene implements GameHost {
   rng = new Rng();
@@ -40,21 +46,27 @@ export class StageScene implements GameHost {
   score = 0;
   focusHeld = false;
   runtime: StageRuntime;
-  private playerRunner: AnmRunner;
+  playerObj: Player;
+  playerBullets: PlayerBullet[] = [];
+  graze = 0;
+  pointItems = 0;
+  private frameDamage = new Map<number, number>();
+  gameOver = false;
   dialogueActive = false;
   private dialogueTimer = 0;
   bossActive: Enemy | null = null;
   bossLifeCount = 0;
   spellName = '';
 
-  constructor(private assets: GameAssets, private audio: AudioBus, difficulty = 1) {
+  constructor(private assets: GameAssets, private audio: AudioBus, difficulty = 1, character: CharacterId = 'reimuA') {
     this.difficulty = difficulty;
     this.runtime = new StageRuntime(TH07_DATA.stages[1], {
       etama: assets.anms.etama,
       enemy: assets.anms.stg1enm,
       effect: assets.anms.eff01
     });
-    this.playerRunner = new AnmRunner(assets.anms.player00, 0);
+    this.playerObj = new Player(character, assets.anms);
+    this.player = this.playerObj;
   }
 
   // -- GameHost --------------------------------------------------------------
@@ -177,7 +189,21 @@ export class StageScene implements GameHost {
 
   update(input: InputFrame): void {
     this.frame++;
-    this.updatePlayerStub(input);
+    const p = this.playerObj;
+    this.frameDamage.clear();
+    if (input.pressed.has('bomb') && p.controllable && !this.gameOver) {
+      if (p.tryBomb()) this.onBombUsed();
+    }
+    p.update(input);
+    this.focusHeld = p.focusHeld;
+    const death = p.tickDeath();
+    if (death === 'died') this.onPlayerDeath();
+    if (!this.gameOver) {
+      for (const b of p.fire()) {
+        this.playerBullets.push(b);
+      }
+      if (p.shooting && this.frame % 8 === 0) this.playSfx(0);
+    }
     if (this.dialogueActive) {
       this.dialogueTimer--;
       if (this.dialogueTimer <= 0) {
@@ -187,26 +213,152 @@ export class StageScene implements GameHost {
     }
     this.runtime.update(this);
     this.updateEnemies();
+    this.updatePlayerBullets();
     this.updateBullets();
+    this.checkPlayerCollision();
     this.updateItems();
     this.updateParticles();
-    this.playerRunner.update();
+    if (p.bombTimer > 0) this.applyBombEffects();
   }
 
-  private updatePlayerStub(input: InputFrame): void {
-    this.focusHeld = input.held.has('focus');
-    // ReimuA movement values from the original ply00a/ply00as SHT data.
-    const speed = this.focusHeld ? 1.6 : 4.0;
-    const diag = this.focusHeld ? 1.1313709 : 2.8284273;
-    let dx = 0;
-    let dy = 0;
-    if (input.held.has('left')) dx -= 1;
-    if (input.held.has('right')) dx += 1;
-    if (input.held.has('up')) dy -= 1;
-    if (input.held.has('down')) dy += 1;
-    const v = dx !== 0 && dy !== 0 ? diag : speed;
-    this.player.x = Math.min(376, Math.max(8, this.player.x + dx * v));
-    this.player.y = Math.min(432, Math.max(16, this.player.y + dy * v));
+  private onBombUsed(): void {
+    this.playSfx(12);
+    this.spawnEffectParticles(3, this.playerObj.x, this.playerObj.y, 24, 0xffffffff);
+  }
+
+  private applyBombEffects(): void {
+    for (const e of this.enemies) {
+      if (e.ecl.canTakeDamage && e.ecl.interactable) this.damageEnemy(e, 6);
+    }
+    if (this.frame % 4 === 0) {
+      for (const b of this.enemyBullets) {
+        this.spawnItem('pointBullet', b.x, b.y, { state: 1 });
+        b.dead = true;
+      }
+    }
+  }
+
+  private onPlayerDeath(): void {
+    const p = this.playerObj;
+    this.playSfx(2);
+    this.spawnEffectParticles(3, p.x, p.y, 32, 0xffffffff);
+    for (let i = 0; i < 5; i++) {
+      this.spawnItem('power', p.x + this.rng.range(64) - 32, p.y - this.rng.range(32));
+    }
+    for (const b of this.enemyBullets) b.dead = true;
+    p.die();
+    if (p.lives < 0) this.gameOver = true;
+  }
+
+  damageEnemy(e: Enemy, damage: number): void {
+    if (!e.ecl.canTakeDamage || !e.ecl.interactable || e.ecl.invisible) return;
+    const done = this.frameDamage.get(e.id) ?? 0;
+    const allowed = Math.max(0, ENEMY_FRAME_DAMAGE_CAP - done);
+    const applied = Math.min(allowed, damage);
+    if (applied <= 0) return;
+    this.frameDamage.set(e.id, done + applied);
+    e.hp -= applied;
+    this.addScore(Math.trunc(applied / 5) * 10);
+  }
+
+  private updatePlayerBullets(): void {
+    for (const b of this.playerBullets) {
+      b.age++;
+      if (b.state === 'fired') {
+        if (b.shotType === 1) this.steerHomingBullet(b);
+        else if (b.shotType === 3 && b.age > 8) {
+          // Accelerating shots (MarisaA missiles).
+          b.speed = Math.min(14, b.speed + 0.4);
+          b.vx = Math.cos(b.angle) * b.speed;
+          b.vy = Math.sin(b.angle) * b.speed;
+        }
+        b.x += b.vx;
+        b.y += b.vy;
+      } else {
+        b.hitAge++;
+        if (b.hitAge > 16) b.dead = true;
+      }
+      if (b.state !== 'fired') continue;
+      for (const e of this.enemies) {
+        if (!e.ecl.collisionEnabled || !e.ecl.interactable || e.ecl.invisible || e.dead) continue;
+        const hw = (e.ecl.hitbox.x + b.hitboxW) / 2;
+        const hh = (e.ecl.hitbox.y + b.hitboxH) / 2;
+        if (Math.abs(b.x - e.x) <= hw && Math.abs(b.y - e.y) <= hh) {
+          this.damageEnemy(e, b.damage);
+          if (b.shotType === 4) {
+            // Piercing shots (MarisaB laser) pass through.
+            b.damage = Math.max(1, Math.trunc(b.damage / 2));
+          } else {
+            b.state = 'collided';
+            b.vx /= 8;
+            b.vy /= 8;
+          }
+          this.playSfx(17);
+          break;
+        }
+      }
+      if (b.y < -32 || b.x < -32 || b.x > 416) b.dead = true;
+    }
+    let w = 0;
+    for (const b of this.playerBullets) if (!b.dead) this.playerBullets[w++] = b;
+    this.playerBullets.length = w;
+  }
+
+  private steerHomingBullet(b: PlayerBullet): void {
+    let best: Enemy | null = null;
+    let bestDist = 1e9;
+    for (const e of this.enemies) {
+      if (!e.ecl.interactable || e.ecl.invisible || e.dead || !e.ecl.canTakeDamage) continue;
+      const d = (e.x - b.x) ** 2 + (e.y - b.y) ** 2;
+      if (d < bestDist) {
+        bestDist = d;
+        best = e;
+      }
+    }
+    if (!best) return;
+    const target = Math.atan2(best.y - b.y, best.x - b.x);
+    let diff = target - b.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    const turn = 0.18;
+    b.angle += Math.max(-turn, Math.min(turn, diff));
+    b.vx = Math.cos(b.angle) * b.speed;
+    b.vy = Math.sin(b.angle) * b.speed;
+  }
+
+  private checkPlayerCollision(): void {
+    const p = this.playerObj;
+    if (this.gameOver || !p.alive || p.invulnFrames > 0 || p.bombInvuln > 0) return;
+    const px = p.x;
+    const py = p.y;
+    const hit = p.hitboxHalf;
+    for (const b of this.enemyBullets) {
+      if (b.dead || b.age < b.spawnDuration) continue;
+      const dx = Math.abs(b.x - px);
+      const dy = Math.abs(b.y - py);
+      if (!b.grazed && dx <= b.grazeW + 16 && dy <= b.grazeH + 16) {
+        b.grazed = true;
+        this.graze++;
+        this.addScore(500);
+        this.playSfx(24);
+      }
+      if (dx <= b.grazeW / 2 + hit && dy <= b.grazeH / 2 + hit) {
+        this.onPlayerHit();
+        return;
+      }
+    }
+    for (const e of this.enemies) {
+      if (!e.ecl.collisionEnabled || !e.ecl.interactable || e.ecl.invisible || e.dead) continue;
+      if (Math.abs(e.x - px) <= e.ecl.hitbox.x / 2 + hit && Math.abs(e.y - py) <= e.ecl.hitbox.y / 2 + hit) {
+        this.onPlayerHit();
+        return;
+      }
+    }
+  }
+
+  private onPlayerHit(): void {
+    const result = this.playerObj.hit();
+    if (result === 'deathbomb-window') this.playSfx(17);
   }
 
   private updateEnemies(): void {
@@ -332,16 +484,70 @@ export class StageScene implements GameHost {
   }
 
   private updateItems(): void {
+    const p = this.playerObj;
+    const sht = p.sht;
+    const pocActive = p.alive && (p.power >= 128 && p.y <= sht.pocLineY);
     for (const it of this.items) {
       it.age++;
-      it.vy = Math.min(3, it.vy + 0.03);
-      it.x += it.vx;
-      it.y += it.vy;
+      if (p.alive && (it.state === 1 || pocActive)) {
+        const angle = Math.atan2(p.y - it.y, p.x - it.x);
+        it.x += Math.cos(angle) * sht.autocollectSpeed;
+        it.y += Math.sin(angle) * sht.autocollectSpeed;
+      } else {
+        it.vy = Math.min(3, it.vy + 0.03);
+        it.x += it.vx;
+        it.y += it.vy;
+      }
+      if (p.alive && Math.abs(it.x - p.x) <= sht.itemRadius && Math.abs(it.y - p.y) <= sht.itemRadius) {
+        this.collectItem(it);
+      }
       if (it.y > 480) it.dead = true;
     }
     let w = 0;
     for (const it of this.items) if (!it.dead) this.items[w++] = it;
     this.items.length = w;
+  }
+
+  private collectItem(it: ItemEntity): void {
+    const p = this.playerObj;
+    it.dead = true;
+    this.playSfx(18);
+    switch (it.type) {
+      case 'power':
+        if (p.power < 128) {
+          p.power = Math.min(128, p.power + 1);
+          if (p.power === 128) this.turnBulletsIntoPointItems();
+        } else {
+          this.addScore(12800);
+        }
+        break;
+      case 'bigPower':
+        p.power = Math.min(128, p.power + 8);
+        break;
+      case 'fullPower':
+        p.power = 128;
+        break;
+      case 'point': {
+        const full = it.y <= p.sht.pocLineY || it.state === 1;
+        this.pointItems++;
+        this.addScore(full ? 100000 : Math.max(100, 100000 - Math.trunc(it.y) * 200));
+        break;
+      }
+      case 'pointBullet':
+        this.addScore(this.graze * 10 + 500);
+        break;
+      case 'bomb':
+        p.bombs = Math.min(8, p.bombs + 1);
+        break;
+      case 'life':
+        p.lives = Math.min(8, p.lives + 1);
+        this.playSfx(22);
+        break;
+      case 'cherry':
+      case 'bigCherry':
+        this.addScore(it.type === 'cherry' ? 1000 : 5000);
+        break;
+    }
   }
 
   private updateParticles(): void {
@@ -391,20 +597,49 @@ export class StageScene implements GameHost {
         });
       }
       for (const it of this.items) {
-        r.ctx.fillStyle = ITEM_COLORS[it.type];
-        r.ctx.fillRect(ox + it.x - 5, oy + it.y - 5, 10, 10);
-        r.ctx.fillStyle = '#fff';
-        r.ctx.fillRect(ox + it.x - 5, oy + it.y - 5, 10, 2);
+        const sprite = this.assets.anms.etama.sprites.get(ITEM_SPRITES[it.type]);
+        if (sprite) {
+          // Items falling above the top edge peek in as arrows (original UX).
+          const drawY = Math.max(8, it.y);
+          r.drawSprite(sprite.imageKey, sprite.x, sprite.y, sprite.w, sprite.h, ox + it.x, oy + drawY, {
+            alpha: it.y < 0 ? 0.55 : 1
+          });
+        }
       }
-      const pf = this.playerRunner.spriteFrame();
-      r.drawAnmFrame(pf, ox + this.player.x, oy + this.player.y);
-      if (this.focusHeld) {
-        r.ctx.fillStyle = '#fff';
-        r.ctx.beginPath();
-        r.ctx.arc(ox + this.player.x, oy + this.player.y, 3, 0, Math.PI * 2);
-        r.ctx.fill();
-        r.ctx.strokeStyle = '#f66';
-        r.ctx.stroke();
+      const p = this.playerObj;
+      for (const b of this.playerBullets) {
+        const fade = b.state === 'collided' ? 1 - b.hitAge / 16 : 0.9;
+        r.drawSprite(b.rect.imageKey, b.rect.x, b.rect.y, b.rect.w, b.rect.h, ox + b.x, oy + b.y, {
+          rotation: b.angle + Math.PI / 2,
+          alpha: Math.max(0, fade),
+          scaleMultiplier: b.state === 'collided' ? 1 + b.hitAge / 10 : 1
+        });
+      }
+      // Option orbs (yin-yang, local sprite 128).
+      if (p.alive && p.power >= 8) {
+        const orbSprite = p.anm.sprites.get(128) ?? p.anm.sprites.get(66);
+        if (orbSprite) {
+          for (const orb of [1, 2] as const) {
+            const off = p.orbOffset(orb);
+            r.drawSprite(orbSprite.imageKey, orbSprite.x, orbSprite.y, orbSprite.w, orbSprite.h, ox + p.x + off.x, oy + p.y + off.y, {
+              rotation: this.frame * 0.1,
+              scaleMultiplier: 0.75
+            });
+          }
+        }
+      }
+      if (p.alive || p.respawnTimer > 0) {
+        const blink = p.invulnFrames > 0 && (this.frame & 2) === 0;
+        const pf = p.runner.spriteFrame();
+        if (!blink) r.drawAnmFrame(pf, ox + p.x, oy + p.y);
+        if (this.focusHeld && p.alive) {
+          r.ctx.fillStyle = '#fff';
+          r.ctx.beginPath();
+          r.ctx.arc(ox + p.x, oy + p.y, p.hitboxHalf + 1.5, 0, Math.PI * 2);
+          r.ctx.fill();
+          r.ctx.strokeStyle = '#f66';
+          r.ctx.stroke();
+        }
       }
     });
     // Dev HUD
@@ -412,6 +647,10 @@ export class StageScene implements GameHost {
     r.text(`frame ${this.frame}  tl ${this.runtime.mainTimeline.index}/${this.runtime.ecl.timeline.length}`, 432, 80, { size: 11 });
     r.text(`enemies ${this.enemies.length}  bullets ${this.enemyBullets.length}`, 432, 96, { size: 11 });
     r.text(`items ${this.items.length}  difficulty ${['E', 'N', 'H', 'L'][this.difficulty]}`, 432, 112, { size: 11 });
+    const p = this.playerObj;
+    r.text(`player ${p.lives}  bomb ${p.bombs}  power ${p.power}`, 432, 144, { size: 12, color: '#fda' });
+    r.text(`graze ${this.graze}  point ${this.pointItems}`, 432, 160, { size: 11 });
+    if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
     if (this.bossActive) {
       const hp = this.bossActive.hp;
       const max = Math.max(1, this.bossActive.maxHp);

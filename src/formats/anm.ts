@@ -58,6 +58,10 @@ export class Anm {
   private parse(): void {
     const v = this.view;
     let entryStart = 0;
+    // Scripts reference sprites by a global id: each entry's embedded sprite
+    // ids (which may be sparse, e.g. player00's 0-17/64-70/128-133) are
+    // offset by a base that advances by (max embedded id + 1) per entry.
+    let entryBase = 0;
     for (let guard = 0; guard < 64; guard++) {
       const spriteCount = v.u32(entryStart + 0);
       const scriptCount = v.u32(entryStart + 4);
@@ -73,9 +77,12 @@ export class Anm {
       const entry: AnmEntry = { name, imageKey, width, height, format, spriteIds: [], scriptIds: [] };
 
       let ptr = entryStart + 64;
+      let maxEmbedded = -1;
       for (let i = 0; i < spriteCount; i++) {
         const off = entryStart + v.u32(ptr + i * 4);
-        const id = v.u32(off);
+        const embedded = v.u32(off);
+        maxEmbedded = Math.max(maxEmbedded, embedded);
+        const id = entryBase + embedded;
         const sprite: AnmSprite = {
           id,
           x: v.f32(off + 4),
@@ -87,6 +94,7 @@ export class Anm {
         this.sprites.set(id, sprite);
         entry.spriteIds.push(id);
       }
+      entryBase += maxEmbedded + 1;
       ptr += spriteCount * 4;
       for (let i = 0; i < scriptCount; i++) {
         const id = v.i32(ptr + i * 8);
