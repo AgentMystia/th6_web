@@ -4,16 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/vanilla/th06-data.js && node --check src/vanilla/th06-logic.js && node --check src/vanilla/th06-effects-data.js && node --check src/vanilla/th06-runtime.js && node --check src/vanilla/th06-player-data.js && node --check src/vanilla/main.js",
-    "generate-data": "node scripts/generate-th06-data.mjs && node scripts/generate-th06-effects-data.mjs",
+    "check": "tsc --noEmit",
+    "build": "esbuild src/main.ts --bundle --format=iife --outfile=dist/th07.js --sourcemap",
+    "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/th07.js --sourcemap --watch --servedir=.",
+    "generate-data": "node scripts/generate-th07-data.mjs",
+    "generate-bgm": "node scripts/split-th07-bgm.mjs",
     "test": "node --test tests/*.test.js",
     "prepare-pages": "node scripts/prepare-pages.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "esbuild": "^0.25.0",
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
     "start-server-and-test": "^3.0.4",
+    "typescript": "^5.6.0",
     "wait-on": "^9.0.10"
   }
 }
