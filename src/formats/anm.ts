@@ -569,7 +569,9 @@ export class AnmRunner {
       y: this.rect.y,
       w: this.rect.w,
       h: this.rect.h,
-      imageKey: this.imageKey ?? this.rect.imageKey,
+      // Sprites can live in a different texture entry than the script that
+      // uses them (etama's four sheets share one script table).
+      imageKey: this.rect.imageKey || this.imageKey || '',
       scaleX: this.mirrored ? -this.scaleX : this.scaleX,
       scaleY: this.flipY ? -this.scaleY : this.scaleY,
       rotation: this.rotZ,
