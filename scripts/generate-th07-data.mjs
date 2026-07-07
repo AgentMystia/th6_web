@@ -83,7 +83,8 @@ const anm = (name) => stripAnmTextures(readFileSync(join(source, name)), name).t
 // resolve entry texture names (data/xxx/yyy.png) to assets/th07-img/yyy.png.
 const ANM_FILES = [
   'etama', 'stg1enm', 'stg1bg', 'player00', 'player01', 'player02',
-  'eff01', 'ascii', 'text', 'title01', 'std1txt', 'capture', 'face_01_00'
+  'eff01', 'ascii', 'text', 'title01', 'std1txt', 'capture', 'face_01_00',
+  'face_rm00', 'face_mr00', 'face_sk00', 'front'
 ];
 
 const SHT_FILES = [

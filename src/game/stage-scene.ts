@@ -10,6 +10,8 @@ import { TH07_DATA } from '../data/th07-data';
 import type { AudioBus } from '../audio/audio';
 import { Player, type CharacterId, type PlayerBullet } from './player';
 import { CherrySystem, BORDER_DURATION, CHERRY_PLUS_MAX } from './cherry';
+import { DialogueRunner, portraitSprite } from './dialogue';
+import { CHARACTERS } from './player';
 
 // Stage host. At the M3 milestone this runs the full stage 1 timeline with a
 // movable player stub (no collision yet) so ECL patterns can be verified.
@@ -60,8 +62,14 @@ export class StageScene implements GameHost {
     }
   });
   hiScore = 100000;
-  dialogueActive = false;
-  private dialogueTimer = 0;
+  dialogue: DialogueRunner | null = null;
+  private dialogueResume = false;
+  stageFrame = 0;
+  stageClear = false;
+  private clearTimer = 0;
+  spellcard: { name: string; id: number; capturing: boolean; bonus: number } | null = null;
+  private spellBanner = 0;
+  private bonusPopup: { text: string; timer: number } | null = null;
   bossActive: Enemy | null = null;
   bossLifeCount = 0;
   spellName = '';
@@ -133,18 +141,23 @@ export class StageScene implements GameHost {
   }
 
   startDialogue(index: number): void {
-    // M3 stub: dialogue implemented in M6; auto-advance after a short pause.
-    this.dialogueActive = true;
-    this.dialogueTimer = 90;
+    this.dialogue = new DialogueRunner(this.runtime.msg, index, {
+      playBgm: (track) => {
+        const names = ['th07_01', 'th07_02', 'th07_03'];
+        const name = names[track];
+        if (name) this.audio.playBgm(name);
+      },
+      fadeBgm: () => this.audio.fadeOutBgm(4)
+    });
   }
 
   isDialogueBlocking(): boolean {
-    return this.dialogueActive;
+    return !!this.dialogue && !this.dialogue.done;
   }
 
   consumeDialogueResume(): boolean {
-    if (!this.dialogueActive && this.dialogueTimer === -1) {
-      this.dialogueTimer = 0;
+    if (this.dialogueResume) {
+      this.dialogueResume = false;
       return true;
     }
     return false;
@@ -152,10 +165,28 @@ export class StageScene implements GameHost {
 
   startBossSpell(spellId: number, arg0: number, name: string): void {
     this.spellName = name;
+    // TH07-TODO: exact per-spell capture bonus values.
+    this.spellcard = { name, id: spellId, capturing: true, bonus: 100000 + spellId * 10000 };
+    this.spellBanner = 150;
+    this.playSfx(12);
   }
 
   endBossSpell(): void {
+    if (this.spellcard?.capturing) {
+      const bonus = this.spellcard.bonus;
+      this.addScore(bonus);
+      this.cherry.onSpellCapture();
+      this.bonusPopup = { text: `Spell Card Bonus! ${bonus.toLocaleString('en-US')}`, timer: 180 };
+      this.playSfx(28);
+    } else if (this.spellcard) {
+      this.bonusPopup = { text: 'Bonus failed...', timer: 120 };
+    }
     this.spellName = '';
+    this.spellcard = null;
+  }
+
+  voidSpellCapture(): void {
+    if (this.spellcard) this.spellcard.capturing = false;
   }
 
   setBossPresent(present: boolean, enemy: Enemy | null): void {
@@ -202,6 +233,7 @@ export class StageScene implements GameHost {
     if (input.pressed.has('bomb') && p.controllable && !this.gameOver) {
       if (p.tryBomb()) {
         this.cherry.onBomb(this.difficulty);
+        this.voidSpellCapture();
         this.onBombUsed();
       }
     }
@@ -215,11 +247,22 @@ export class StageScene implements GameHost {
       }
       if (p.shooting && this.frame % 8 === 0) this.playSfx(0);
     }
-    if (this.dialogueActive) {
-      this.dialogueTimer--;
-      if (this.dialogueTimer <= 0) {
-        this.dialogueActive = false;
-        this.dialogueTimer = -1;
+    this.stageFrame++;
+    if (this.dialogue) {
+      this.dialogue.update(input.pressed.has('shoot') || input.held.has('skip'));
+      if (this.dialogue.resumeTicket) {
+        this.dialogue.resumeTicket = false;
+        this.dialogueResume = true;
+      }
+      if (this.dialogue.done) this.dialogue = null;
+    }
+    if (this.spellBanner > 0) this.spellBanner--;
+    if (this.bonusPopup && --this.bonusPopup.timer <= 0) this.bonusPopup = null;
+    if (!this.stageClear && this.runtime.isTimelineComplete() && !this.bossActive && this.enemies.length <= 1) {
+      this.clearTimer++;
+      if (this.clearTimer > 180) {
+        this.stageClear = true;
+        this.audio.fadeOutBgm(4);
       }
     }
     const borderBonus = this.cherry.tick();
@@ -255,6 +298,7 @@ export class StageScene implements GameHost {
   private onPlayerDeath(): void {
     const p = this.playerObj;
     this.cherry.onDeath(p.unfocused.cherryLossOnDeath);
+    this.voidSpellCapture();
     this.playSfx(2);
     this.spawnEffectParticles(3, p.x, p.y, 32, 0xffffffff);
     for (let i = 0; i < 5; i++) {
@@ -635,6 +679,7 @@ export class StageScene implements GameHost {
     r.clipPlayfield(() => {
       const ox = PLAYFIELD.x;
       const oy = PLAYFIELD.y;
+      this.drawBackground(r, ox, oy);
       for (const p of this.particles) {
         const alpha = 1 - p.age / p.life;
         r.ctx.globalAlpha = alpha * 0.8;
@@ -708,9 +753,129 @@ export class StageScene implements GameHost {
       if (this.cherry.borderActive) this.drawBorder(r, ox, oy);
     });
     this.drawSidebar(r);
-    if (this.spellName) r.text(this.spellName, PLAYFIELD.x + 8, PLAYFIELD.y + 16, { size: 12, color: '#fca' });
-    if (this.dialogueActive) r.text('...dialogue...', PLAYFIELD.x + 120, PLAYFIELD.y + 300, { size: 14, color: '#ada' });
+    this.drawSpellOverlay(r);
+    this.drawDialogue(r);
+    this.drawStageTitle(r);
+    if (this.bonusPopup) {
+      r.text(this.bonusPopup.text, PLAYFIELD.x + 70, PLAYFIELD.y + 90, { size: 15, color: '#ffd700' });
+    }
+    if (this.stageClear) {
+      r.text('STAGE CLEAR', PLAYFIELD.x + 128, PLAYFIELD.y + 190, { size: 22, color: '#ffa' });
+      r.text(`Stage Bonus  ${(this.graze * 10 + this.pointItems * 1000 + this.cherry.cherry).toLocaleString('en-US')}`, PLAYFIELD.x + 100, PLAYFIELD.y + 230, { size: 14 });
+    }
     if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
+  }
+
+  // Pseudo-3D stage background: STD objects projected through the original
+  // camera path with fog. Quads are drawn as scaled billboards — a documented
+  // approximation of the original textured-quad renderer.
+  private drawBackground(r: Renderer, ox: number, oy: number): void {
+    const std = this.runtime.std;
+    const frame = std.frame;
+    const cam = std.camera(frame);
+    const fog = std.fog(frame);
+    const ctx = r.ctx;
+    ctx.fillStyle = fog.css;
+    ctx.fillRect(ox, oy, PLAYFIELD.width, PLAYFIELD.height);
+    const bgAnm = this.assets.anms.stg1bg;
+    const draws: { z: number; sprite: number; x: number; y: number; scale: number; alpha: number }[] = [];
+    for (const inst of std.instances) {
+      const obj = std.objects[inst.id];
+      if (!obj) continue;
+      for (const quad of obj.quads) {
+        const wx = inst.x + quad.x - cam.x;
+        const wy = inst.y + quad.y - cam.y;
+        const wz = inst.z + quad.z - cam.z;
+        const proj = std.project(wx, wy, wz, { x: 0, y: 0, width: PLAYFIELD.width, height: PLAYFIELD.height });
+        if (!proj) continue;
+        const depth = wz + 560;
+        const alpha = Math.max(0, Math.min(1, 1 - (depth - fog.near) / Math.max(1, fog.far - fog.near)));
+        if (alpha <= 0.02) continue;
+        draws.push({ z: depth, sprite: quad.script, x: proj.x, y: proj.y, scale: proj.scale, alpha });
+      }
+    }
+    draws.sort((a, b) => b.z - a.z);
+    for (const d of draws) {
+      const ref = bgAnm.hasScript(d.sprite) ? bgAnm.scriptRef(d.sprite) : null;
+      const spriteId = bgAnm.entries[0]?.spriteIds[d.sprite] ?? d.sprite;
+      const rect = bgAnm.sprites.get(spriteId);
+      if (!rect || !ref) continue;
+      r.drawSprite(rect.imageKey, rect.x, rect.y, rect.w, rect.h, ox + d.x, oy + d.y, {
+        scaleMultiplier: d.scale * 2,
+        alpha: d.alpha
+      });
+    }
+  }
+
+  private drawSpellOverlay(r: Renderer): void {
+    if (!this.spellName) return;
+    const slide = Math.max(0, this.spellBanner - 90) / 60;
+    const x = PLAYFIELD.x + PLAYFIELD.width - 12 - slide * 200;
+    r.text(this.spellName, x, PLAYFIELD.y + 22, { size: 13, color: '#fdd', align: 'right' });
+    if (this.spellcard) {
+      r.text(`Bonus ${this.spellcard.capturing ? this.spellcard.bonus.toLocaleString('en-US') : 'failed'}`, PLAYFIELD.x + PLAYFIELD.width - 12, PLAYFIELD.y + 40, { size: 11, color: this.spellcard.capturing ? '#adf' : '#977', align: 'right' });
+    }
+  }
+
+  private drawDialogue(r: Renderer): void {
+    const d = this.dialogue;
+    if (!d) return;
+    const ctx = r.ctx;
+    const family = CHARACTERS[this.playerObj.character].family;
+    const playerFaceKey = (['face_rm00', 'face_mr00', 'face_sk00'] as const)[family];
+    const anms = [this.assets.anms[playerFaceKey], this.assets.anms.face_01_00];
+    for (let side = 0; side < 2; side++) {
+      const p = d.portraits[side];
+      if (!p?.visible) continue;
+      const anm = anms[side];
+      if (!anm) continue;
+      const sprite = portraitSprite(anm, p.face);
+      if (!sprite) continue;
+      const scale = 0.5;
+      const w = sprite.w * scale;
+      const h = sprite.h * scale;
+      const baseX = side === 0 ? PLAYFIELD.x + 10 + (p.slideIn - 1) * 60 : PLAYFIELD.x + PLAYFIELD.width - w - 10 - (p.slideIn - 1) * 60;
+      const y = PLAYFIELD.y + PLAYFIELD.height - h + 8;
+      ctx.save();
+      ctx.globalAlpha = p.active ? 1 : 0.55;
+      const img = r.image(sprite.imageKey);
+      if (img) {
+        if (!p.active) ctx.filter = 'brightness(0.55)';
+        ctx.drawImage(img, sprite.x, sprite.y, sprite.w, sprite.h, baseX, y, w, h);
+        ctx.filter = 'none';
+      }
+      ctx.restore();
+    }
+    // Text box
+    const boxY = PLAYFIELD.y + PLAYFIELD.height - 82;
+    ctx.fillStyle = 'rgba(8, 8, 24, 0.78)';
+    ctx.fillRect(PLAYFIELD.x + 8, boxY, PLAYFIELD.width - 16, 66);
+    ctx.strokeStyle = 'rgba(160, 160, 220, 0.5)';
+    ctx.strokeRect(PLAYFIELD.x + 8.5, boxY + 0.5, PLAYFIELD.width - 17, 65);
+    if (d.lines[0]) r.text(d.lines[0], PLAYFIELD.x + 22, boxY + 12, { size: 14 });
+    if (d.lines[1]) r.text(d.lines[1], PLAYFIELD.x + 22, boxY + 36, { size: 14 });
+    if (d.bossIntroTimer > 0 && d.bossIntro.length) {
+      const cx = PLAYFIELD.x + PLAYFIELD.width - 20;
+      d.bossIntro.slice(-2).forEach((line, i) => {
+        r.text(line, cx, PLAYFIELD.y + 120 + i * 22, { size: 15, color: '#fbd', align: 'right' });
+      });
+    }
+  }
+
+  // Stage title card during the opening seconds, using the stage/song names
+  // decoded from the STD data.
+  private drawStageTitle(r: Renderer): void {
+    const f = this.stageFrame;
+    if (f > 360 || this.dialogue) return;
+    const alpha = f < 60 ? f / 60 : f > 280 ? Math.max(0, (360 - f) / 80) : 1;
+    if (alpha <= 0) return;
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    r.text('STAGE 1', PLAYFIELD.x + 150, PLAYFIELD.y + 150, { size: 18, color: '#fdd' });
+    r.text(this.runtime.std.stageName, PLAYFIELD.x + 90, PLAYFIELD.y + 180, { size: 16 });
+    r.text(`♪ ${this.runtime.std.songNames[0] ?? ''}`, PLAYFIELD.x + 100, PLAYFIELD.y + 215, { size: 12, color: '#aac' });
+    ctx.restore();
   }
 
   // PCB-style right sidebar: HiScore/Score, lives and bombs as stars, Power,
