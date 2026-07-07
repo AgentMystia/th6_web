@@ -9,6 +9,7 @@ import { AnmRunner } from '../formats/anm';
 import { TH07_DATA } from '../data/th07-data';
 import type { AudioBus } from '../audio/audio';
 import { Player, type CharacterId, type PlayerBullet } from './player';
+import { CherrySystem, BORDER_DURATION, CHERRY_PLUS_MAX } from './cherry';
 
 // Stage host. At the M3 milestone this runs the full stage 1 timeline with a
 // movable player stub (no collision yet) so ECL patterns can be verified.
@@ -52,6 +53,13 @@ export class StageScene implements GameHost {
   pointItems = 0;
   private frameDamage = new Map<number, number>();
   gameOver = false;
+  cherry = new CherrySystem({
+    onBorderStart: () => this.playSfx(27),
+    onBorderEnd: (result) => {
+      if (result === 'survived') this.playSfx(28);
+    }
+  });
+  hiScore = 100000;
   dialogueActive = false;
   private dialogueTimer = 0;
   bossActive: Enemy | null = null;
@@ -192,7 +200,10 @@ export class StageScene implements GameHost {
     const p = this.playerObj;
     this.frameDamage.clear();
     if (input.pressed.has('bomb') && p.controllable && !this.gameOver) {
-      if (p.tryBomb()) this.onBombUsed();
+      if (p.tryBomb()) {
+        this.cherry.onBomb(this.difficulty);
+        this.onBombUsed();
+      }
     }
     p.update(input);
     this.focusHeld = p.focusHeld;
@@ -211,6 +222,8 @@ export class StageScene implements GameHost {
         this.dialogueTimer = -1;
       }
     }
+    const borderBonus = this.cherry.tick();
+    if (borderBonus > 0) this.addScore(borderBonus);
     this.runtime.update(this);
     this.updateEnemies();
     this.updatePlayerBullets();
@@ -219,6 +232,7 @@ export class StageScene implements GameHost {
     this.updateItems();
     this.updateParticles();
     if (p.bombTimer > 0) this.applyBombEffects();
+    if (this.score > this.hiScore) this.hiScore = this.score;
   }
 
   private onBombUsed(): void {
@@ -240,6 +254,7 @@ export class StageScene implements GameHost {
 
   private onPlayerDeath(): void {
     const p = this.playerObj;
+    this.cherry.onDeath(p.unfocused.cherryLossOnDeath);
     this.playSfx(2);
     this.spawnEffectParticles(3, p.x, p.y, 32, 0xffffffff);
     for (let i = 0; i < 5; i++) {
@@ -285,6 +300,7 @@ export class StageScene implements GameHost {
         const hh = (e.ecl.hitbox.y + b.hitboxH) / 2;
         if (Math.abs(b.x - e.x) <= hw && Math.abs(b.y - e.y) <= hh) {
           this.damageEnemy(e, b.damage);
+          this.cherry.onShotHit(this.focusHeld);
           if (b.shotType === 4) {
             // Piercing shots (MarisaB laser) pass through.
             b.damage = Math.max(1, Math.trunc(b.damage / 2));
@@ -329,6 +345,20 @@ export class StageScene implements GameHost {
   private checkPlayerCollision(): void {
     const p = this.playerObj;
     if (this.gameOver || !p.alive || p.invulnFrames > 0 || p.bombInvuln > 0) return;
+    if (this.cherry.borderActive) {
+      // Grazes still register during the border (they feed CherryMax).
+      for (const b of this.enemyBullets) {
+        if (b.dead || b.age < b.spawnDuration || b.grazed) continue;
+        if (Math.abs(b.x - p.x) <= b.grazeW + 16 && Math.abs(b.y - p.y) <= b.grazeH + 16) {
+          b.grazed = true;
+          this.graze++;
+          this.addScore(500);
+          this.cherry.onGraze(this.focusHeld);
+          this.playSfx(24);
+        }
+      }
+      return;
+    }
     const px = p.x;
     const py = p.y;
     const hit = p.hitboxHalf;
@@ -340,6 +370,7 @@ export class StageScene implements GameHost {
         b.grazed = true;
         this.graze++;
         this.addScore(500);
+        this.cherry.onGraze(this.focusHeld);
         this.playSfx(24);
       }
       if (dx <= b.grazeW / 2 + hit && dy <= b.grazeH / 2 + hit) {
@@ -357,6 +388,11 @@ export class StageScene implements GameHost {
   }
 
   private onPlayerHit(): void {
+    if (this.cherry.breakBorder()) {
+      // The border absorbs the hit.
+      this.playerObj.invulnFrames = Math.max(this.playerObj.invulnFrames, 30);
+      return;
+    }
     const result = this.playerObj.hit();
     if (result === 'deathbomb-window') this.playSfx(17);
   }
@@ -486,9 +522,10 @@ export class StageScene implements GameHost {
   private updateItems(): void {
     const p = this.playerObj;
     const sht = p.sht;
-    const pocActive = p.alive && (p.power >= 128 && p.y <= sht.pocLineY);
+    const pocActive = p.alive && ((p.power >= 128 && p.y <= sht.pocLineY) || this.cherry.borderActive);
     for (const it of this.items) {
       it.age++;
+      if (this.cherry.borderActive) it.state = 1;
       if (p.alive && (it.state === 1 || pocActive)) {
         const angle = Math.atan2(p.y - it.y, p.x - it.x);
         it.x += Math.cos(angle) * sht.autocollectSpeed;
@@ -528,13 +565,13 @@ export class StageScene implements GameHost {
         p.power = 128;
         break;
       case 'point': {
-        const full = it.y <= p.sht.pocLineY || it.state === 1;
         this.pointItems++;
-        this.addScore(full ? 100000 : Math.max(100, 100000 - Math.trunc(it.y) * 200));
+        this.addScore(this.cherry.pointItemValue(it.y, p.sht.pocLineY, it.state === 1));
         break;
       }
       case 'pointBullet':
         this.addScore(this.graze * 10 + 500);
+        this.cherry.onStarItem();
         break;
       case 'bomb':
         p.bombs = Math.min(8, p.bombs + 1);
@@ -545,7 +582,8 @@ export class StageScene implements GameHost {
         break;
       case 'cherry':
       case 'bigCherry':
-        this.addScore(it.type === 'cherry' ? 1000 : 5000);
+        this.addScore(this.cherry.cherryItemScore(it.y, p.sht.pocLineY, it.state === 1));
+        this.cherry.onCherryItem();
         break;
     }
   }
@@ -560,6 +598,32 @@ export class StageScene implements GameHost {
     let w = 0;
     for (const p of this.particles) if (p.age < p.life) this.particles[w++] = p;
     this.particles.length = w;
+  }
+
+  // Supernatural Border visual: a rotating square frame that shrinks as the
+  // border's 9 seconds run out, drawn additively around the player.
+  private drawBorder(r: Renderer, ox: number, oy: number): void {
+    const p = this.playerObj;
+    const t = this.cherry.borderTimer / BORDER_DURATION;
+    const radius = 40 + 320 * t;
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.translate(ox + p.x, oy + p.y);
+    for (const phase of [0, Math.PI / 4]) {
+      ctx.save();
+      ctx.rotate(this.frame * 0.01 + phase);
+      ctx.strokeStyle = `rgba(180, 220, 255, ${0.35 + 0.2 * Math.sin(this.frame * 0.2)})`;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(-radius, -radius, radius * 2, radius * 2);
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 0.72, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 200, 240, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
   }
 
   // -- draw ------------------------------------------------------------------
@@ -641,26 +705,108 @@ export class StageScene implements GameHost {
           r.ctx.stroke();
         }
       }
+      if (this.cherry.borderActive) this.drawBorder(r, ox, oy);
     });
-    // Dev HUD
-    r.text(`score ${this.score}`, 432, 60, { size: 13 });
-    r.text(`frame ${this.frame}  tl ${this.runtime.mainTimeline.index}/${this.runtime.ecl.timeline.length}`, 432, 80, { size: 11 });
-    r.text(`enemies ${this.enemies.length}  bullets ${this.enemyBullets.length}`, 432, 96, { size: 11 });
-    r.text(`items ${this.items.length}  difficulty ${['E', 'N', 'H', 'L'][this.difficulty]}`, 432, 112, { size: 11 });
-    const p = this.playerObj;
-    r.text(`player ${p.lives}  bomb ${p.bombs}  power ${p.power}`, 432, 144, { size: 12, color: '#fda' });
-    r.text(`graze ${this.graze}  point ${this.pointItems}`, 432, 160, { size: 11 });
-    if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
-    if (this.bossActive) {
-      const hp = this.bossActive.hp;
-      const max = Math.max(1, this.bossActive.maxHp);
-      r.ctx.fillStyle = '#311';
-      r.ctx.fillRect(PLAYFIELD.x + 8, PLAYFIELD.y + 6, PLAYFIELD.width - 16, 6);
-      r.ctx.fillStyle = '#e55';
-      r.ctx.fillRect(PLAYFIELD.x + 8, PLAYFIELD.y + 6, (PLAYFIELD.width - 16) * Math.max(0, hp / max), 6);
-      r.text(`boss hp ${hp}  timer ${Math.trunc(this.bossActive.ecl.bossTimer / 60)}`, 432, 128, { size: 11 });
-    }
+    this.drawSidebar(r);
     if (this.spellName) r.text(this.spellName, PLAYFIELD.x + 8, PLAYFIELD.y + 16, { size: 12, color: '#fca' });
     if (this.dialogueActive) r.text('...dialogue...', PLAYFIELD.x + 120, PLAYFIELD.y + 300, { size: 14, color: '#ada' });
+    if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
+  }
+
+  // PCB-style right sidebar: HiScore/Score, lives and bombs as stars, Power,
+  // Cherry / CherryMax, the Cherry+ border gauge, Graze and Point counters.
+  private drawSidebar(r: Renderer): void {
+    const ctx = r.ctx;
+    const x = 432;
+    const p = this.playerObj;
+    const num = (v: number) => v.toLocaleString('en-US').replace(/,/g, ',');
+    r.text('HiScore', x, 58, { size: 13, color: '#caa' });
+    r.text(num(Math.max(this.hiScore, this.score)), x + 78, 58, { size: 13 });
+    r.text('Score', x, 76, { size: 13, color: '#caa' });
+    r.text(num(this.score), x + 78, 76, { size: 13 });
+
+    r.text('Player', x, 106, { size: 13, color: '#d88' });
+    for (let i = 0; i < Math.max(0, p.lives); i++) {
+      this.drawStar(ctx, x + 78 + i * 16, 112, '#f45c5c');
+    }
+    r.text('Bomb', x, 124, { size: 13, color: '#8b8' });
+    for (let i = 0; i < Math.max(0, p.bombs); i++) {
+      this.drawStar(ctx, x + 78 + i * 16, 130, '#5cf47a');
+    }
+
+    r.text('Power', x, 152, { size: 13, color: '#b9a' });
+    r.text(p.power >= 128 ? 'MAX' : String(p.power), x + 78, 152, { size: 13, color: p.power >= 128 ? '#fd6' : '#fff' });
+    ctx.fillStyle = '#331122';
+    ctx.fillRect(x, 168, 176, 5);
+    ctx.fillStyle = '#e6a';
+    ctx.fillRect(x, 168, 176 * Math.min(1, p.power / 128), 5);
+
+    r.text('Graze', x, 182, { size: 12, color: '#aab' });
+    r.text(String(this.graze), x + 78, 182, { size: 12 });
+    r.text('Point', x, 198, { size: 12, color: '#aab' });
+    r.text(String(this.pointItems), x + 78, 198, { size: 12 });
+
+    // Cherry block
+    r.text('Cherry', x, 228, { size: 13, color: '#f9c' });
+    r.text(num(this.cherry.cherry), x + 92, 228, { size: 13, color: '#fcd' });
+    r.text('CherryMax', x, 246, { size: 13, color: '#f9c' });
+    r.text(num(this.cherry.cherryMax), x + 92, 246, { size: 13, color: '#fcd' });
+    r.text('Cherry+', x, 264, { size: 13, color: '#f9c' });
+    r.text(num(this.cherry.cherryPlus), x + 92, 264, { size: 13, color: this.cherry.borderActive ? '#8df' : '#fcd' });
+    ctx.fillStyle = '#302';
+    ctx.fillRect(x, 280, 176, 6);
+    if (this.cherry.borderActive) {
+      ctx.fillStyle = '#8df';
+      ctx.fillRect(x, 280, 176 * (this.cherry.borderTimer / BORDER_DURATION), 6);
+    } else {
+      ctx.fillStyle = '#f6b';
+      ctx.fillRect(x, 280, 176 * (this.cherry.cherryPlus / CHERRY_PLUS_MAX), 6);
+    }
+
+    if (this.bossActive) {
+      const hp = Math.max(0, this.bossActive.hp);
+      const max = Math.max(1, this.bossActive.maxHp);
+      ctx.fillStyle = '#311';
+      ctx.fillRect(PLAYFIELD.x + 40, PLAYFIELD.y + 6, PLAYFIELD.width - 80, 5);
+      ctx.fillStyle = '#e55';
+      ctx.fillRect(PLAYFIELD.x + 40, PLAYFIELD.y + 6, (PLAYFIELD.width - 80) * (hp / max), 5);
+      for (let i = 0; i < this.bossLifeCount; i++) {
+        this.drawStar(ctx, PLAYFIELD.x + 12 + i * 12, 9, '#e55');
+      }
+      const seconds = Math.max(0, Math.trunc((this.timerThreshold() - this.bossActive.ecl.bossTimer) / 60));
+      r.text(String(seconds).padStart(2, '0'), PLAYFIELD.x + PLAYFIELD.width - 30, 12, { size: 13, color: seconds <= 9 ? '#f66' : '#fff' });
+      // Enemy position marker on the bottom edge (PCB feature).
+      const bx = PLAYFIELD.x + Math.max(0, Math.min(PLAYFIELD.width, this.bossActive.x));
+      ctx.fillStyle = '#f8bcd0';
+      ctx.beginPath();
+      ctx.moveTo(bx - 7, PLAYFIELD.y + PLAYFIELD.height);
+      ctx.lineTo(bx + 7, PLAYFIELD.y + PLAYFIELD.height);
+      ctx.lineTo(bx, PLAYFIELD.y + PLAYFIELD.height - 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  private timerThreshold(): number {
+    const s = this.bossActive?.ecl;
+    if (!s) return 0;
+    if (s.timerCallbackThreshold >= 0) return s.timerCallbackThreshold;
+    const sched = s.scheduledTimerSubs.find((t) => !t.fired);
+    return sched ? sched.time : 6000;
+  }
+
+  private drawStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, color: string): void {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+      const b = a + Math.PI / 5;
+      ctx.lineTo(cx + Math.cos(a) * 6, cy + Math.sin(a) * 6);
+      ctx.lineTo(cx + Math.cos(b) * 2.6, cy + Math.sin(b) * 2.6);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 }

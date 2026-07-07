@@ -14,6 +14,7 @@ interface TestHook {
   setPower(v: number): void;
   inject(held: string[], pressed: string[]): void;
   damageBoss(n: number): void;
+  addCherry(n: number): void;
 }
 
 declare global {
@@ -67,6 +68,7 @@ async function boot(): Promise<void> {
         player: { x: scene.playerObj.x, y: scene.playerObj.y, lives: scene.playerObj.lives, bombs: scene.playerObj.bombs, power: scene.playerObj.power },
         graze: scene.graze,
         playerBullets: scene.playerBullets.length,
+        cherry: { c: scene.cherry.cherry, max: scene.cherry.cherryMax, plus: scene.cherry.cherryPlus, border: scene.cherry.borderTimer },
         bulletDump: scene.enemyBullets.slice(0, 5).map((b) => ({
           x: Math.round(b.x),
           y: Math.round(b.y),
@@ -100,6 +102,9 @@ async function boot(): Promise<void> {
       },
       damageBoss: (n: number) => {
         if (scene.bossActive) scene.bossActive.hp -= n;
+      },
+      addCherry: (n: number) => {
+        for (let i = 0; i < n / 2; i++) scene.cherry.onShotHit(false);
       }
     };
   }
