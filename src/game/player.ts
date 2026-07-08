@@ -11,14 +11,17 @@ import type { InputFrame } from '../core/input';
 
 export type CharacterId = 'reimuA' | 'reimuB' | 'marisaA' | 'marisaB' | 'sakuyaA' | 'sakuyaB';
 
-export const CHARACTERS: Record<CharacterId, { family: 0 | 1 | 2; name: string; shtBase: string; anmKey: 'player00' | 'player01' | 'player02'; deathbombFrames: number }> = {
-  // Deathbomb windows: Reimu 8, Marisa 4, Sakuya 12 frames (community-documented PCB values).
-  reimuA: { family: 0, name: 'Reimu A', shtBase: 'ply00a', anmKey: 'player00', deathbombFrames: 8 },
-  reimuB: { family: 0, name: 'Reimu B', shtBase: 'ply00b', anmKey: 'player00', deathbombFrames: 8 },
-  marisaA: { family: 1, name: 'Marisa A', shtBase: 'ply01a', anmKey: 'player01', deathbombFrames: 4 },
-  marisaB: { family: 1, name: 'Marisa B', shtBase: 'ply01b', anmKey: 'player01', deathbombFrames: 4 },
-  sakuyaA: { family: 2, name: 'Sakuya A', shtBase: 'ply02a', anmKey: 'player02', deathbombFrames: 12 },
-  sakuyaB: { family: 2, name: 'Sakuya B', shtBase: 'ply02b', anmKey: 'player02', deathbombFrames: 12 }
+export const CHARACTERS: Record<CharacterId, { family: 0 | 1 | 2; name: string; shtBase: string; anmKey: 'player00' | 'player01' | 'player02' }> = {
+  // The deathbomb window (frames you may still bomb after being hit before
+  // actually dying) is read from each character's .sht data (deathbombWindow,
+  // int32 at header offset 8) rather than hardcoded here: it's 15 for Reimu,
+  // 8 for Marisa, 6 for Sakuya, matching independently-documented PCB values.
+  reimuA: { family: 0, name: 'Reimu A', shtBase: 'ply00a', anmKey: 'player00' },
+  reimuB: { family: 0, name: 'Reimu B', shtBase: 'ply00b', anmKey: 'player00' },
+  marisaA: { family: 1, name: 'Marisa A', shtBase: 'ply01a', anmKey: 'player01' },
+  marisaB: { family: 1, name: 'Marisa B', shtBase: 'ply01b', anmKey: 'player01' },
+  sakuyaA: { family: 2, name: 'Sakuya A', shtBase: 'ply02a', anmKey: 'player02' },
+  sakuyaB: { family: 2, name: 'Sakuya B', shtBase: 'ply02b', anmKey: 'player02' }
 };
 
 // The game assigns the player ANM a sprite-id base of 1024; SHT sprite
@@ -36,6 +39,7 @@ export interface PlayerBullet {
   shotType: number;
   hitboxW: number;
   hitboxH: number;
+  sfxId: number; // from ShtShot.sfxId; playback not wired up (stage-scene.ts uses a fixed fire sound instead)
   age: number;
   state: 'fired' | 'collided';
   hitAge: number;
@@ -50,7 +54,12 @@ const ORB_OFFSETS = {
   focused: { 1: { x: -16, y: -24 }, 2: { x: 16, y: -24 } }
 } as const;
 
-const SHOT_CYCLE = 30; // frames per fire cycle, as in the original engine family
+// PCB's shot cadence runs on a 60-frame cycle (Priw8's sht-webedit docs:
+// "PCB - shooting uses a 60-frame timer. For bullets to fire consistently,
+// choose a fire_rate that is a factor of 60"), not the 30-frame cycle used
+// by the TH06 engine family. shot.interval/shot.delay are frame counts
+// within that cycle.
+const SHOT_CYCLE = 60;
 
 export class Player {
   x = 192;
@@ -61,7 +70,10 @@ export class Player {
   readonly anm: Anm;
   focusHeld = false;
   shooting = false;
-  fireFrame = 0;
+  // -1 while not shooting so that the first held frame lands on fireFrame 0
+  // (see update()): a shot with delay 0 must fire on the very press frame,
+  // not "interval" frames later.
+  fireFrame = -1;
   bullets: PlayerBullet[] = [];
   lives = 2;
   bombs = 3;
@@ -119,7 +131,7 @@ export class Player {
     if (this.shooting) {
       this.fireFrame = (this.fireFrame + 1) % SHOT_CYCLE;
     } else {
-      this.fireFrame = 0;
+      this.fireFrame = -1;
     }
     this.updatePose(input);
     this.runner.update();
@@ -178,6 +190,7 @@ export class Player {
         shotType: shot.shotType,
         hitboxW: shot.hitboxW,
         hitboxH: shot.hitboxH,
+        sfxId: shot.sfxId,
         age: 0,
         state: 'fired',
         hitAge: 0,
@@ -189,7 +202,7 @@ export class Player {
 
   hit(): 'deathbomb-window' | 'invulnerable' {
     if (this.invulnFrames > 0 || this.bombInvuln > 0 || this.deathTimer >= 0) return 'invulnerable';
-    this.deathTimer = CHARACTERS[this.character].deathbombFrames;
+    this.deathTimer = Math.trunc(this.unfocused.deathbombWindow);
     return 'deathbomb-window';
   }
 

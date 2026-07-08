@@ -39,6 +39,9 @@ async function boot(): Promise<void> {
 
   const character = (params.get('shot') ?? 'reimuA') as never;
   const scene = new StageScene(assets, audio, difficulty, character);
+  // Test-only override so scripts/dev-shot.mjs can snapshot a shot pattern
+  // at an arbitrary power bracket without needing to grind for it in-game.
+  if (params.has('power')) scene.playerObj.power = Number(params.get('power'));
   audio.preloadBgm(['th07_02', 'th07_03']);
   audio.playBgm('th07_02');
 
@@ -68,6 +71,15 @@ async function boot(): Promise<void> {
         player: { x: scene.playerObj.x, y: scene.playerObj.y, lives: scene.playerObj.lives, bombs: scene.playerObj.bombs, power: scene.playerObj.power },
         graze: scene.graze,
         playerBullets: scene.playerBullets.length,
+        playerBulletDump: scene.playerBullets.slice(0, 8).map((b) => ({
+          x: Math.round(b.x),
+          y: Math.round(b.y),
+          shotType: b.shotType,
+          rect: [b.rect.x, b.rect.y, b.rect.w, b.rect.h],
+          img: b.rect.imageKey,
+          vx: Number(b.vx.toFixed(2)),
+          vy: Number(b.vy.toFixed(2))
+        })),
         cherry: { c: scene.cherry.cherry, max: scene.cherry.cherryMax, plus: scene.cherry.cherryPlus, border: scene.cherry.borderTimer },
         bulletDump: scene.enemyBullets.slice(0, 5).map((b) => ({
           x: Math.round(b.x),
