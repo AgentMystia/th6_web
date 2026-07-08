@@ -9,7 +9,7 @@
     "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/th07.js --sourcemap --watch --servedir=.",
     "generate-data": "node scripts/generate-th07-data.mjs",
     "generate-bgm": "node scripts/split-th07-bgm.mjs",
-    "test": "node --test tests/*.test.js",
+    "test": "node --test tests/*.test.js tests/*.test.mjs",
     "prepare-pages": "node scripts/prepare-pages.mjs"
   },
   "devDependencies": {
