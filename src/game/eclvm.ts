@@ -59,6 +59,8 @@ export class StageRuntime {
   readonly effectAnm: Anm;
   // TH07 runs several timelines in parallel (stage 1: main waves + ambience).
   timelineCursors: { index: number; frame: number }[] = [];
+  // Trace of fired timeline spawn events (see update()); for timing audits.
+  spawnLog: { t: number; time: number; sub: number }[] = [];
   private randomItemIndex = 0;
   private randomSpawnIndex = 0;
   bossSlots: (Enemy | null)[] = [];
@@ -111,6 +113,12 @@ export class StageRuntime {
           held = true;
           break;
         }
+        // Timing-audit trace: which timeline fired which event at what
+        // timeline-clock value (scripts/audit code reads this via the test
+        // hook; unused and near-free in normal play).
+        if ((evt.op & 1) === 0 && evt.op <= 6) {
+          this.spawnLog.push({ t, time: evt.time, sub: evt.arg0 });
+        }
         cursor.index++;
       }
       if (!held && !game.isDialogueBlocking?.()) cursor.frame++;
@@ -125,7 +133,9 @@ export class StageRuntime {
       case 6: {
         // Spawn enemy. op bit 1 = mirrored (as in TH06's even/odd pairs).
         // TH07-TODO: semantics of bit 2 (ops 4/6) unverified; treated as plain.
-        if (game.enemies.some((e) => e.ecl.isBoss)) return null;
+        // No boss-active suppression here: the data's ins_12 holds are the
+        // real coordination (timeline1 deliberately spawns its side fairies
+        // while the timeline0 midboss is still on screen).
         let { x = 0, y = 0, z = 0 } = evt;
         if (x <= -990) x = game.rng.range(384);
         if (y <= -990) y = game.rng.range(448);

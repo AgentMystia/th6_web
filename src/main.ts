@@ -17,6 +17,7 @@ interface TestHook {
   inject(held: string[], pressed: string[]): void;
   damageBoss(n: number): void;
   addCherry(n: number): void;
+  spawnLog(): { t: number; time: number; sub: number }[];
 }
 
 declare global {
@@ -60,7 +61,7 @@ function stageSnapshot(scene: StageScene): Record<string, unknown> {
       vy: Number(b.vy.toFixed(2))
     })),
     cherry: { c: scene.cherry.cherry, max: scene.cherry.cherryMax, plus: scene.cherry.cherryPlus, border: scene.cherry.borderTimer },
-    bulletDump: scene.enemyBullets.slice(0, 5).map((b) => ({
+    bulletDump: scene.enemyBullets.slice(0, 64).map((b) => ({
       x: Math.round(b.x),
       y: Math.round(b.y),
       sprite: b.sprite,
@@ -174,6 +175,7 @@ async function boot(): Promise<void> {
       inject: (held: string[], pressed: string[]) => {
         input.inject(held as never, pressed as never);
       },
+      spawnLog: () => stage?.runtime.spawnLog ?? [],
       damageBoss: (n: number) => {
         // Same gate as player damage, so probes can't hit a boss that is
         // invulnerable during phase transitions / the death animation.
