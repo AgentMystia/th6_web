@@ -908,17 +908,22 @@ export class StageScene implements GameHost {
       const obj = std.objects[inst.id];
       if (!obj) continue;
       for (const quad of obj.quads) {
-        const lateral = inst.x + quad.x;
-        const depth = inst.y + quad.y;
+        // STD quads extend from their position CORNER by width/height (the
+        // PyTouhou vertex construction: (x,y)..(x+w,y+h)), not around a
+        // center point. Corner semantics is what centers stage 1's ground
+        // (instance x=-192, quad x=-64, w=512 → lateral [-256,256]) on the
+        // camera's track; treating it as a center leaves the road's right
+        // half ungeometried, which shows as a fog-colored void wherever
+        // only single-side instances exist (most of the stage).
+        const lateral0 = inst.x + quad.x;
+        const depth0 = inst.y + quad.y;
         const height = inst.z + quad.z;
-        const halfW = quad.w / 2;
-        const halfH = quad.h / 2;
         candidates.push({
-          depthCenter: depth - camFrame.y,
-          lateral0: lateral - halfW,
-          lateral1: lateral + halfW,
-          depth0: depth - halfH,
-          depth1: depth + halfH,
+          depthCenter: depth0 + quad.h / 2 - camFrame.y,
+          lateral0,
+          lateral1: lateral0 + quad.w,
+          depth0,
+          depth1: depth0 + quad.h,
           height,
           script: quad.script
         });
@@ -1137,17 +1142,17 @@ export class StageScene implements GameHost {
     label(FRONT.point, 176);
     this.drawNumber(r, this.pointItems, valueX, 178);
 
-    // Cherry readout hugging the screen's bottom-left, using the ascii.png
-    // "Cherry+" banner sprite (spec §3.3) plus the current Cherry+ value and
-    // a thin border-charge bar — the original's bottom indicator, not a
-    // sidebar row.
-    this.blit(r, 'ascii', [0, 224, 96, 16], PLAYFIELD.x, 448, this.cherry.borderActive ? 1 : 0.85);
-    this.drawNumber(r, this.cherry.borderActive ? this.cherry.borderTimer : this.cherry.cherryPlus, PLAYFIELD.x + 100, 450);
-    ctx.fillStyle = '#2a0817';
-    ctx.fillRect(PLAYFIELD.x, 462, PLAYFIELD.width, 2);
-    ctx.fillStyle = this.cherry.borderActive ? '#8df' : '#f6b';
-    const frac = this.cherry.borderActive ? this.cherry.borderTimer / BORDER_DURATION : this.cherry.cherryPlus / CHERRY_PLUS_MAX;
-    ctx.fillRect(PLAYFIELD.x, 462, PLAYFIELD.width * Math.min(1, frac), 2);
+    // Cherry+ readout hugging the screen's bottom-left (ascii.anm script4):
+    // the banner sprite reads "Cherry+ [blank]/" — the current Cherry+ value
+    // is composited right-aligned into the blank slot ending at the slash
+    // (in-sprite x≈84), and the 50000 cap goes after it. The banner itself
+    // dims to alpha 64/255 while charging and runs full-bright while the
+    // border is up (the script's interrupt-2/3 states); the engine-drawn
+    // digits stay opaque.
+    this.blit(r, 'ascii', [0, 224, 96, 16], PLAYFIELD.x, 448, this.cherry.borderActive ? 1 : 64 / 255);
+    const plusStr = String(Math.max(0, Math.trunc(this.cherry.cherryPlus)));
+    this.drawNumber(r, this.cherry.cherryPlus, PLAYFIELD.x + 84 - plusStr.length * DIGIT_W, 450);
+    this.drawNumber(r, CHERRY_PLUS_MAX, PLAYFIELD.x + 96, 450);
 
     if (this.bossActive) {
       const hp = Math.max(0, this.bossActive.hp);
