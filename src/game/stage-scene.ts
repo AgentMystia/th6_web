@@ -804,38 +804,43 @@ export class StageScene implements GameHost {
     if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
   }
 
+  // Top-left-anchored sprite blit. Renderer#drawSprite centers on (x,y)
+  // (entity semantics); the HUD layout spec's coordinates are all top-left
+  // corners (the ANM scripts run ins_22 corner-relative), so convert here.
+  private blit(r: Renderer, key: string, rect: readonly number[], x: number, y: number, alpha = 1): void {
+    r.drawSprite(key, rect[0], rect[1], rect[2], rect[3], x + rect[2] / 2, y + rect[3] / 2, alpha === 1 ? {} : { alpha });
+  }
+
   // Ornate maroon screen frame: tiles front.png's sprite12 (32x32) and
   // sprite13 (128x16) over every region outside the playfield. The tile
   // sizes divide the border area exactly (top/bottom 128x16 bands ×5, side
   // columns 32x32 grids), which is the spec's recommended construction — the
   // ANM scripts carry the tiles but not their positions (engine-placed).
   private drawFrame(r: Renderer): void {
-    const [tx, ty, tw, th] = FRONT.tile32;
-    const [sx, sy, sw, sh] = FRONT.strip128;
     const right = PLAYFIELD.x + PLAYFIELD.width; // 416
     const bottom = PLAYFIELD.y + PLAYFIELD.height; // 464
     // Top & bottom bands (0..640 × 16), 128px strips.
-    for (let x = 0; x < SCREEN_W; x += sw) {
-      r.drawSprite('front', sx, sy, sw, sh, x, 0);
-      r.drawSprite('front', sx, sy, sw, sh, x, bottom);
+    for (let x = 0; x < SCREEN_W; x += FRONT.strip128[2]) {
+      this.blit(r, 'front', FRONT.strip128, x, 0);
+      this.blit(r, 'front', FRONT.strip128, x, bottom);
     }
     // Left column and right sidebar background, 32×32 tiles.
-    for (let y = PLAYFIELD.y; y < bottom; y += th) {
-      for (let x = 0; x < PLAYFIELD.x; x += tw) r.drawSprite('front', tx, ty, tw, th, x, y);
-      for (let x = right; x < SCREEN_W; x += tw) r.drawSprite('front', tx, ty, tw, th, x, y);
+    for (let y = PLAYFIELD.y; y < bottom; y += FRONT.tile32[3]) {
+      for (let x = 0; x < PLAYFIELD.x; x += FRONT.tile32[2]) this.blit(r, 'front', FRONT.tile32, x, y);
+      for (let x = right; x < SCREEN_W; x += FRONT.tile32[2]) this.blit(r, 'front', FRONT.tile32, x, y);
     }
   }
 
-  // Blits a base-10 integer using the ascii.png 8x12 digit font, left edge at
-  // (x,y). Optionally zero-pads to `width` digits (scores are fixed-width in
-  // the original). Returns the x just past the last digit.
+  // Blits a base-10 integer using the ascii.png 8x12 digit font, top-left
+  // corner at (x,y). Optionally zero-pads to `width` digits (scores are
+  // fixed-width in the original). Returns the x just past the last digit.
   private drawNumber(r: Renderer, value: number, x: number, y: number, width = 0, alpha = 1): number {
     let s = String(Math.max(0, Math.trunc(value)));
     if (width > 0) s = s.padStart(width, '0');
     for (let i = 0; i < s.length; i++) {
       const d = s.charCodeAt(i) - 48;
       if (d >= 0 && d <= 9) {
-        r.drawSprite('ascii', d * DIGIT_W, DIGIT_Y, DIGIT_W, DIGIT_H, x + i * DIGIT_W, y, { alpha });
+        this.blit(r, 'ascii', [d * DIGIT_W, DIGIT_Y, DIGIT_W, DIGIT_H], x + i * DIGIT_W, y, alpha);
       }
     }
     return x + s.length * DIGIT_W;
@@ -1099,14 +1104,12 @@ export class StageScene implements GameHost {
     const labelX = 432; // resting column for every front.png label (spec §1.2)
     const valueX = 504; // digit readouts start just past the 64px label box
     const p = this.playerObj;
-    const label = (rect: readonly number[], y: number) =>
-      r.drawSprite('front', rect[0], rect[1], rect[2], rect[3], labelX, y);
-    const star = (rect: readonly number[], sx: number, sy: number) =>
-      r.drawSprite('front', rect[0], rect[1], rect[2], rect[3], sx, sy);
+    const label = (rect: readonly number[], y: number) => this.blit(r, 'front', rect, labelX, y);
+    const star = (rect: readonly number[], sx: number, sy: number) => this.blit(r, 'front', rect, sx, sy);
 
     // Logo panel + caption watermark (drawn first so text/labels sit on top).
-    r.drawSprite('front', FRONT.logo[0], FRONT.logo[1], FRONT.logo[2], FRONT.logo[3], 480, 208);
-    r.drawSprite('front', FRONT.caption[0], FRONT.caption[1], FRONT.caption[2], FRONT.caption[3], 448, 336);
+    this.blit(r, 'front', FRONT.logo, 480, 208);
+    this.blit(r, 'front', FRONT.caption, 448, 336);
 
     label(FRONT.hiscore, 48);
     this.drawNumber(r, Math.max(this.hiScore, this.score), valueX, 50, 9);
@@ -1118,13 +1121,16 @@ export class StageScene implements GameHost {
     label(FRONT.bomb, 112);
     for (let i = 0; i < Math.max(0, p.bombs); i++) star(FRONT.blueStar, valueX + i * 16, 112);
 
+    // Power bar sits on the Power row at the value column (a filled gradient
+    // bar with MAX/current inside, like the original's readout).
     label(FRONT.power, 144);
-    if (p.power >= 128) r.text('MAX', valueX, 157, { size: 14, color: '#fd6' });
-    else this.drawNumber(r, p.power, valueX, 146);
-    ctx.fillStyle = '#3a1626';
-    ctx.fillRect(labelX, 164, 176, 4);
-    ctx.fillStyle = p.power >= 128 ? '#fd6' : '#e6a';
-    ctx.fillRect(labelX, 164, 176 * Math.min(1, p.power / 128), 4);
+    const barW = 128;
+    ctx.fillStyle = '#2a0817';
+    ctx.fillRect(valueX, 146, barW, 12);
+    ctx.fillStyle = p.power >= 128 ? '#d9b95c' : '#a53a63';
+    ctx.fillRect(valueX, 146, barW * Math.min(1, p.power / 128), 12);
+    if (p.power >= 128) r.text('MAX', valueX + 4, 156, { size: 12, color: '#fff' });
+    else this.drawNumber(r, p.power, valueX + 4, 146);
 
     label(FRONT.graze, 160);
     this.drawNumber(r, this.graze, valueX, 162);
@@ -1135,7 +1141,7 @@ export class StageScene implements GameHost {
     // "Cherry+" banner sprite (spec §3.3) plus the current Cherry+ value and
     // a thin border-charge bar — the original's bottom indicator, not a
     // sidebar row.
-    r.drawSprite('ascii', 0, 224, 96, 16, PLAYFIELD.x, 448, { alpha: this.cherry.borderActive ? 1 : 0.85 });
+    this.blit(r, 'ascii', [0, 224, 96, 16], PLAYFIELD.x, 448, this.cherry.borderActive ? 1 : 0.85);
     this.drawNumber(r, this.cherry.borderActive ? this.cherry.borderTimer : this.cherry.cherryPlus, PLAYFIELD.x + 100, 450);
     ctx.fillStyle = '#2a0817';
     ctx.fillRect(PLAYFIELD.x, 462, PLAYFIELD.width, 2);
