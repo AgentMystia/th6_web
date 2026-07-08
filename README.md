@@ -9,8 +9,8 @@
 ECL / STD / ANM / MSG / SHT 二进制数据来驱动关卡、弹幕、Boss、自机、
 背景与 UI，而不是手写近似脚本。逆向自 `Th07.exe` 的常量均带地址出处注释。
 
-本仓库此前是 TH06 Web 复刻（保留在 `legacy-vanilla` 分支及 `src/vanilla/`
-遗留目录中）；当前主线开发为 TH07 TypeScript 版。
+本仓库此前是 TH06 Web 复刻，完整保留在 `legacy-vanilla` 分支；
+当前分支为 TH07 TypeScript 版，仅包含 TH07 所需文件。
 
 ### 状态
 
@@ -50,7 +50,8 @@ npm run dev        # 监听构建 + 本地静态服务
 ```sh
 npm run check      # tsc --noEmit（strict）
 npm test           # 单元测试（樱点/结界、数据一致性）
-node scripts/dev-shot.mjs /tmp/s.png 800 "difficulty=3"   # 无头截图冒烟
+node scripts/dev-shot.mjs /tmp/s.png 800 "difficulty=3"   # 无头冒烟 + 状态快照
+node scripts/pixel-report.mjs /tmp/s.png                  # 文本化画面区域统计
 ```
 
 ### 目录
@@ -73,8 +74,6 @@ node scripts/dev-shot.mjs /tmp/s.png 800 "difficulty=3"   # 无头截图冒烟
 - 集中注册的近似项见 AGENTS.md §7（聚焦 Option 轨道速率、Bomb 演出、
   部分 HUD 摆位等）。
 - Stage 2+ 未实装。
-- TH06 遗留文件（`src/vanilla/` 等）待清理，完整保留于
-  `legacy-vanilla` 分支。
 
 ### 版权
 
@@ -93,9 +92,9 @@ scripts, danmaku, bosses, the player, backgrounds, and UI — no hand-written
 approximate stage scripts. Constants reverse-engineered from `Th07.exe`
 carry address-provenance comments.
 
-This repository previously hosted a TH06 web remake (preserved on the
-`legacy-vanilla` branch and in the legacy `src/vanilla/` directory); active
-development is the TH07 TypeScript app.
+This repository previously hosted a TH06 web remake, preserved in full on
+the `legacy-vanilla` branch; this branch contains only the TH07 TypeScript
+app and its required assets.
 
 ### Status
 
@@ -141,7 +140,8 @@ Validation:
 ```sh
 npm run check      # tsc --noEmit (strict)
 npm test           # unit tests (cherry/border, data consistency)
-node scripts/dev-shot.mjs /tmp/s.png 800 "difficulty=3"   # headless smoke
+node scripts/dev-shot.mjs /tmp/s.png 800 "difficulty=3"   # headless smoke + snapshot
+node scripts/pixel-report.mjs /tmp/s.png                  # text-mode visual probes
 ```
 
 ### Layout
@@ -167,8 +167,6 @@ and `npm run generate-bgm` re-slices the BGM.
 - The registry of known approximations lives in AGENTS.md §7 (focused
   option orbit rate, bomb presentation, some HUD placements).
 - Stages 2+ are not implemented.
-- Legacy TH06 files (`src/vanilla/` etc.) are pending removal; they remain
-  intact on the `legacy-vanilla` branch.
 
 ### Copyright
 

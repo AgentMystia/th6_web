@@ -56,9 +56,8 @@ Browser code must not read from `reference/`, `tests/`, `scripts/`,
   binaries (ECL/STD/MSG/SHT + THTX-stripped ANMs) with the BGM loop table.
   Rebuild via `npm run generate-data`; never hand-edit.
 
-Legacy TH06 app: `src/vanilla/`, `src/styles.css`, `assets/th06-img/`,
-TH06 entries in `tests/`/`scripts/`. Frozen, preserved on the
-`legacy-vanilla` branch, scheduled for removal from this branch.
+The legacy TH06 app was removed from this branch (2026-07); it survives
+in full on the `legacy-vanilla` branch.
 
 ## Tooling (`scripts/`)
 
@@ -72,17 +71,20 @@ TH06 entries in `tests/`/`scripts/`. Frozen, preserved on the
   `reference/th07-original/` (strips ANM textures, verifies integrity).
 - `split-th07-bgm.mjs` — decodes the BGM stream and slices per-track Oggs
   using the `thbgm.fmt` sample table.
-- `prepare-pages.mjs` — assembles the static-deploy tree from runtime
-  files only.
-- TH06 legacy: `generate-th06-*.mjs`, `audit-th06-stages.mjs`.
+- `pixel-report.mjs` — text-mode visual verification: samples named
+  regions of a screenshot (640x480 game coordinates) and prints average
+  color / brightness / texture % / distinct colors per region, so visual
+  changes can be judged without viewing the image (baselines in
+  AGENTS.md §5).
+- `prepare-pages.mjs` — assembles the static-deploy tree in `dist/pages/`
+  from runtime files only.
 
 ## Tests (`tests/`)
 
 - `th07-cherry.test.mjs` — Cherry/Border state machine unit tests.
-- `th06-logic.test.js`, `stage1-source-values.test.js` — legacy TH06
-  checks (kept green until the cleanup).
-- `e2e/` — legacy Playwright browser spec; excluded from `npm test`
-  (which is why `npm test` globs files rather than the directory).
+- `npm test` runs `node --test tests/*.test.mjs`; add new unit tests with
+  that suffix. Browser-level verification lives in the `scripts/dev-*`
+  tools rather than a test runner.
 
 ## Reference corpus (`reference/`, git-ignored, local-only)
 
@@ -92,7 +94,8 @@ TH06 entries in `tests/`/`scripts/`. Frozen, preserved on the
   `thstd -d7`, `thmsg -d7`, `thanm -l7`); the ground truth for stage
   scripts, geometry, dialogue, and sprite/animation layout.
 - `Th07.exe` — v1.00b executable for Ghidra constant recovery.
-- TH06-era subdirectories remain for the legacy app.
+- TH06-era subdirectories may remain locally; only the `legacy-vanilla`
+  branch uses them.
 
 Tests and scripts may read `reference/` (and degrade gracefully without
 it); browser code never does.

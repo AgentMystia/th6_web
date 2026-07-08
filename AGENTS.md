@@ -75,17 +75,47 @@ Every commit must satisfy ALL of:
 
 ## 5. The verification loop (how quality actually happens)
 
-Code that typechecks is not done. **Done means observed working.**
+Code that typechecks is not done. **Done means observed working.** The
+protocol below is designed for **text-only models**: every check yields
+machine-readable text (state snapshots and pixel statistics), and no step
+requires viewing an image. If your model does have vision, viewing the
+screenshots is a bonus check on top — never a substitute for the numbers.
 
 For any gameplay or visual change:
 
 1. `npm run check && npm run build && npm test`.
-2. Screenshot the affected states with the headless tools and **look at
-   every screenshot yourself** (Read tool renders PNGs). Judge against the
-   acceptance criteria before reporting anything.
-3. Iterate until the screenshots match the criteria. A change nobody looked
-   at is assumed broken — this project's worst regressions all shipped in
-   changes that "compiled fine".
+2. Drive the affected states headlessly and read the **snapshot JSON**
+   (entity counts, positions, boss/spell state, cherry, player) printed by
+   the tools. Assert the fields your change should have moved — and that
+   the ones it shouldn't have moved didn't.
+3. For anything rendered, run **`node scripts/pixel-report.mjs <shot.png>`**
+   and compare against the baseline table below. The report samples named
+   regions (in 640×480 game coordinates) and prints average color,
+   brightness, texture % (pixels far from the region mean — detail
+   present), distinct-color count, and the center pixel. Custom regions:
+   append `x,y,w,h:label` args.
+4. Iterate until snapshot + probes match the criteria. A change verified
+   only by "it compiles" is assumed broken — this project's worst
+   regressions all shipped in changes that compiled fine.
+
+Baseline probe values (measured on a healthy build, frame 800, Lunatic;
+tolerances ±12 on color channels, ±10 on texture % unless noted):
+
+| region | healthy reading | failure signature |
+|---|---|---|
+| `sky` | lavender-grey avg (≈`#acaacd`), texture ≤3% | high texture = geometry leaking above fog |
+| `ground-left/center/right` | texture ≥10% all three (13–60%) | any side flat at fog color (≈`#8080c0`, texture ≤3%) = missing geometry / corner-vs-center bug |
+| `frame-left/right` | avg ≈`#400e20`, texture 0% | near-black = frame tiles not drawn; shifted avg = wrong tile rect |
+| `hud-labels` | texture ≈30–45%, ≥100 colors | texture ≤5% = labels missing/misanchored |
+| `hud-digits` | texture ≥20% | 0% = digit font not rendering |
+| `logo` | texture ≥80%, ≥200 colors, green channel present | flat maroon = logo missing |
+| `cherry-banner` | texture ≥15% | flat = banner/value missing |
+| `player-zone` | bright ≥140, texture ≥50% (at spawn, alive) | flat ground reading = player not drawn (or moved/dead — cross-check snapshot `player`) |
+
+If a reading is out of band, the *pair* of snapshot JSON + probe row
+usually identifies the subsystem before any code reading (e.g. snapshot
+says `enemies:19` but playfield probes are all flat → rendering, not
+simulation).
 
 Tools (they serve the repo over a local static server and drive headless
 Chromium at `/opt/pw-browsers/chromium-*/chrome-linux/chrome`; run
@@ -102,23 +132,28 @@ Chromium at `/opt/pw-browsers/chromium-*/chrome-linux/chrome`; run
   press edges). Step = `key@shotName` or `N*key@shotName`; keys:
   `up down left right confirm back`, plus `wait`. Screenshots and snapshot
   JSON per named step.
+- `node scripts/pixel-report.mjs <shot.png> [x,y,w,h:label ...]`
+  Region statistics for text-mode visual verification (see step 3 above).
 - `node scripts/audit-th07-player.mjs`
   Dumps all 12 `.sht` files through the real parser (header + every
   shooter record per power bracket) for regression diffing.
 
-Standard stage checkpoints (frame → what must hold):
+Standard stage checkpoints (dev-shot frame → machine-checkable criteria):
 
-| frame | check |
-|---|---|
-| 120 | intro camera sweep; HUD labels cascaded in |
-| 800 | cruise: full-width road, trees both sides, smooth fog horizon |
-| 2500 | waves + item drops; Cherry+ readout counting |
-| 3400 | dark-purple fog section (visibly darker than 800) |
-| 5600–6200 | Letty: HP bar, spell banner, timer digits; boss-loop background with no fog-colored void anywhere |
+| frame | snapshot must show | probes must show |
+|---|---|---|
+| 120 | enemies ≥1, no errors | `hud-labels` texture ≥30% (cascade done) |
+| 800 | enemies >0, bullets >0 (Lunatic) | all three `ground-*` textured; `sky` flat |
+| 2500 | score >0 when `shoot` held | `cherry-banner` texture ≥15% |
+| 3400 | — | `sky`/`ground-*` avgs visibly darker than at 800 (dark-purple fog section) |
+| 5600–6200 | `boss:true`, `spell` non-empty at spell phases | `ground-*` all textured (boss-loop background — no fog-colored void) |
 
-Menus: title (frame ~130), difficulty with Lunatic highlighted, character
-and shot-type steps, then confirm into the stage and verify the snapshot
-shows `scene:"stage"` with the chosen difficulty/character.
+Menus (`dev-menu.mjs`): each step's snapshot must report the expected
+`scene`/`cursor`/`difficultyName`/`character`/`shotType`; after the final
+confirm, `scene:"stage"` with the chosen difficulty and character. Probe
+any menu screenshot with custom regions when art placement is in doubt
+(e.g. the title logo occupies roughly `64,64,320,176` and should read
+texture ≥60%).
 
 ## 6. Format facts (do not re-derive; do not assume TH06)
 
@@ -246,8 +281,10 @@ comparisons against real play).
   the constant, re-read the disassembly. Every compensating hack we ever
   added (scroll speed, camera lift, ground mirroring, procedural moon) was
   masking a misread and got replaced by the real semantics.
-- **`node --test tests/` fails but files pass individually** → it recurses
-  into `tests/e2e/` (Playwright spec). Use `npm test`.
+- **Probe reads flat where content belongs** → check the snapshot first:
+  if the simulation state is right (entities exist), the defect is in
+  rendering (anchor, entry-scoped ids, clip, alpha); if the state is wrong
+  too, it's simulation (ECL/rank/timing) — don't debug the renderer.
 
 ## 9. Orchestration protocol (multi-agent work)
 
@@ -268,9 +305,10 @@ acceptance criteria, or when two of them share a file.
 3. **Steps**: concrete, ordered, with tool paths (thanm/thstd/thecl if
    needed) and disassembly locations.
 4. **Acceptance criteria**: the exact dev-shot/dev-menu invocations, the
-   checkpoint frames, and what each screenshot must show. Require the agent
-   to view its own screenshots and iterate — "visual quality is the
-   deliverable".
+   checkpoint frames, and the snapshot fields + pixel-report readings each
+   must produce (paste the §5 baseline rows that apply). Require the agent
+   to run the probes and iterate until the numbers are in band — the
+   numbers are the deliverable, and they work for text-only agents.
 5. **Constraints**: no new dependencies, no commits (orchestrator commits),
    match code style, comment only approximations/provenance, keep the tree
    compiling at every stop point.
@@ -284,8 +322,11 @@ acceptance criteria, or when two of them share a file.
   yourself; a mis-briefed executor produces confident garbage — the
   "camera never moves" hack chain came from briefing TH06 op semantics
   for TH07 data).
-- Review by looking at the executor's screenshots yourself. Never accept a
-  textual "it looks right".
+- Review the executor's evidence yourself: re-run its dev-shot/pixel-report
+  invocations (or demand the raw outputs) and check the numbers against
+  §5. Never accept an unquantified "it looks right". Viewing screenshots
+  is an optional extra for vision-capable reviewers, not part of the
+  contract.
 - Commit in reviewed checkpoints, one concern per commit, so a crashed or
   runaway agent can be rolled back cleanly.
 - Assume agents can die mid-edit (session limits). After any crash:
@@ -320,10 +361,10 @@ acceptance criteria, or when two of them share a file.
   `test-results/`, `dist/`.
 - Keep diffs focused; no drive-by refactors. New scripts/tests only as
   intentional project files.
-- Legacy TH06 app (`src/vanilla/`, `src/styles.css`, TH06 assets, TH06
-  tests/scripts) is frozen — preserved on branch `legacy-vanilla`,
-  scheduled for removal here. Don't invest in it; don't silently break
-  `npm test` while it still covers both.
+- The legacy TH06 app has been removed from this branch; it is preserved
+  in full on branch `legacy-vanilla`. Do not resurrect TH06 files here,
+  and do not consult the TH06 implementation as behavioral authority for
+  TH07 (§2, §6: several formats and constants genuinely differ).
 - Commit messages: what + why, present tense; mention the evidence
   (disassembly, exe address, screenshot checkpoint) that justified the
   change.
