@@ -42,6 +42,9 @@ function stageSnapshot(scene: StageScene): Record<string, unknown> {
     timelines: scene.runtime.timelineCursors.map((c) => ({ ...c })),
     bossActive: !!scene.bossActive,
     bossHp: scene.bossActive?.hp ?? null,
+    stageClear: scene.stageClear,
+    gameOver: scene.gameOver,
+    continueActive: !!scene.continueScreen,
     spellName: scene.spellName,
     rngSeed: scene.rng.seed,
     player: { x: scene.playerObj.x, y: scene.playerObj.y, lives: scene.playerObj.lives, bombs: scene.playerObj.bombs, power: scene.playerObj.power },
@@ -102,6 +105,8 @@ async function boot(): Promise<void> {
 
   let stage: StageScene | null = null;
   let menu: MenuFlow | null = null;
+  // Hi-score carried across stage runs within this browser session.
+  let sessionHiScore = 100000;
 
   // Shared by both the menu's "confirm" callback and the direct (?test=1,
   // no ?menu=1) boot path below, so BGM/preload behavior is identical either
@@ -109,6 +114,17 @@ async function boot(): Promise<void> {
   // tracks were already wired up as-is.
   function startStage(difficulty: number, character: CharacterId): StageScene {
     const s = new StageScene(assets, audio, difficulty, character);
+    // Headless probes (?test=1 without ?menu=1) keep the scene alive forever;
+    // real play gets the arcade flow: continue screen + return to title.
+    s.mode = useMenu ? 'arcade' : 'test';
+    s.hiScore = Math.max(s.hiScore, sessionHiScore);
+    s.onExitToTitle = () => {
+      sessionHiScore = Math.max(sessionHiScore, s.hiScore);
+      stage = null;
+      menu = new MenuFlow(assets, audio, startStage);
+      audio.preloadBgm(['th07_01']);
+      audio.playBgm('th07_01');
+    };
     stage = s;
     menu = null;
     audio.preloadBgm(['th07_02', 'th07_03']);
@@ -159,7 +175,10 @@ async function boot(): Promise<void> {
         input.inject(held as never, pressed as never);
       },
       damageBoss: (n: number) => {
-        if (stage?.bossActive) stage.bossActive.hp -= n;
+        // Same gate as player damage, so probes can't hit a boss that is
+        // invulnerable during phase transitions / the death animation.
+        const b = stage?.bossActive;
+        if (b && b.ecl.canTakeDamage && b.ecl.interactable) b.hp -= n;
       },
       addCherry: (n: number) => {
         if (!stage) return;

@@ -8,10 +8,9 @@ import type { GameAssets } from './assets';
 import { AnmRunner, type AnmFrame } from '../formats/anm';
 import { TH07_DATA } from '../data/th07-data';
 import type { AudioBus } from '../audio/audio';
-import { Player, type CharacterId, type PlayerBullet } from './player';
+import { CHARACTERS, Player, type CharacterId, type PlayerBullet } from './player';
 import { CherrySystem, BORDER_DURATION, CHERRY_PLUS_MAX } from './cherry';
 import { DialogueRunner, portraitSprite } from './dialogue';
-import { CHARACTERS } from './player';
 
 // Stage host. At the M3 milestone this runs the full stage 1 timeline with a
 // movable player stub (no collision yet) so ECL patterns can be verified.
@@ -90,6 +89,17 @@ export class StageScene implements GameHost {
   // (see drawBackground / bgAnmFrame).
   private bgAnmCache = new Map<number, { runner: AnmRunner; frame: number }>();
   gameOver = false;
+  // Arcade end-of-game flow. 'test' keeps the pre-existing headless-probe
+  // semantics (no freeze, no scene exit); 'arcade' is the real game: PCB's
+  // continue screen (3 credits, score reset to the continue count) and a
+  // return to the title after game over or the stage-clear tally.
+  mode: 'arcade' | 'test' = 'arcade';
+  onExitToTitle: (() => void) | null = null;
+  continueScreen: { cursor: number } | null = null;
+  continuesUsed = 0;
+  private gameOverTimer = 0;
+  private stageClearTimer = 0;
+  private exitFired = false;
   cherry = new CherrySystem({
     onBorderStart: () => this.playSfx(27),
     onBorderEnd: (result) => {
@@ -176,7 +186,11 @@ export class StageScene implements GameHost {
   }
 
   startDialogue(index: number): void {
-    this.dialogue = new DialogueRunner(this.runtime.msg, index, {
+    // msg1.dat entry layout is sparse: character*10 + phase (0 pre-boss,
+    // 1 post-boss) — entries 0/1 Reimu, 10/11 Marisa, 20/21 Sakuya. The ECL
+    // timeline passes only the phase; the engine adds the character offset.
+    const entry = CHARACTERS[this.playerObj.character].family * 10 + index;
+    this.dialogue = new DialogueRunner(this.runtime.msg, entry, {
       playBgm: (track) => {
         const names = ['th07_01', 'th07_02', 'th07_03'];
         const name = names[track];
@@ -265,6 +279,18 @@ export class StageScene implements GameHost {
 
   update(input: InputFrame): void {
     this.frame++;
+    // The continue screen freezes gameplay entirely, like the original.
+    if (this.continueScreen) {
+      this.updateContinueScreen(input);
+      return;
+    }
+    // Declined / exhausted continues: linger on GAME OVER, then leave.
+    if (this.gameOver && this.mode === 'arcade') {
+      if (++this.gameOverTimer > 240) this.exitToTitle();
+    }
+    if (this.stageClear && this.mode === 'arcade') {
+      if (++this.stageClearTimer > 480) this.exitToTitle();
+    }
     const p = this.playerObj;
     this.frameDamage.clear();
     if (input.pressed.has('bomb') && p.controllable && !this.gameOver) {
@@ -343,7 +369,55 @@ export class StageScene implements GameHost {
     }
     for (const b of this.enemyBullets) b.dead = true;
     p.die();
-    if (p.lives < 0) this.gameOver = true;
+    if (p.lives < 0) {
+      this.gameOver = true;
+      // PCB offers 3 continues per game; past that it's a straight game over.
+      if (this.mode === 'arcade' && this.continuesUsed < 3) {
+        this.continueScreen = { cursor: 0 };
+      }
+    }
+  }
+
+  // -- arcade flow (continue screen / scene exit) ----------------------------
+
+  private updateContinueScreen(input: InputFrame): void {
+    const cs = this.continueScreen!;
+    if (input.pressed.has('up') || input.pressed.has('down') || input.pressed.has('left') || input.pressed.has('right')) cs.cursor ^= 1;
+    if (input.pressed.has('shoot') || input.pressed.has('confirm')) {
+      if (cs.cursor === 0) this.doContinue();
+      else this.declineContinue();
+      return;
+    }
+    if (input.pressed.has('bomb') || input.pressed.has('back')) {
+      if (cs.cursor === 1) this.declineContinue();
+      else cs.cursor = 1;
+    }
+  }
+
+  private doContinue(): void {
+    const p = this.playerObj;
+    this.continuesUsed++;
+    // The original's famous continue penalty: the score is wiped and becomes
+    // the number of continues used.
+    this.score = this.continuesUsed;
+    p.lives = 2;
+    p.bombs = Math.trunc(p.unfocused.bombs);
+    this.gameOver = false;
+    this.gameOverTimer = 0;
+    this.continueScreen = null;
+    this.playSfx(8); // se_ok00
+  }
+
+  private declineContinue(): void {
+    this.continueScreen = null;
+    this.gameOverTimer = 0; // gameOver stays set; update() exits after the linger
+  }
+
+  private exitToTitle(): void {
+    if (this.exitFired) return;
+    this.exitFired = true;
+    this.audio.fadeOutBgm(1);
+    this.onExitToTitle?.();
   }
 
   damageEnemy(e: Enemy, damage: number): void {
@@ -801,7 +875,29 @@ export class StageScene implements GameHost {
       r.text('STAGE CLEAR', PLAYFIELD.x + 128, PLAYFIELD.y + 190, { size: 22, color: '#ffa' });
       r.text(`Stage Bonus  ${(this.graze * 10 + this.pointItems * 1000 + this.cherry.cherry).toLocaleString('en-US')}`, PLAYFIELD.x + 100, PLAYFIELD.y + 230, { size: 14 });
     }
-    if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
+    if (this.continueScreen) this.drawContinueScreen(r);
+    else if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
+  }
+
+  private drawContinueScreen(r: Renderer): void {
+    const cx = PLAYFIELD.x + PLAYFIELD.width / 2;
+    const ctx = r.ctx;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 16, 0.65)';
+    ctx.fillRect(PLAYFIELD.x, PLAYFIELD.y, PLAYFIELD.width, PLAYFIELD.height);
+    ctx.restore();
+    r.text('Continue?', cx, PLAYFIELD.y + 168, { size: 24, color: '#ffe0a0', align: 'center' });
+    r.text(`Credits ${3 - this.continuesUsed}`, cx, PLAYFIELD.y + 204, { size: 13, color: '#ccc', align: 'center' });
+    const blink = this.frame % 40 < 28;
+    const cur = this.continueScreen!.cursor;
+    r.text('Yes', cx - 40, PLAYFIELD.y + 240, {
+      size: 16, align: 'center',
+      color: cur === 0 ? (blink ? '#fff' : '#ffd700') : '#777'
+    });
+    r.text('No', cx + 40, PLAYFIELD.y + 240, {
+      size: 16, align: 'center',
+      color: cur === 1 ? (blink ? '#fff' : '#ffd700') : '#777'
+    });
   }
 
   // Top-left-anchored sprite blit. Renderer#drawSprite centers on (x,y)

@@ -744,6 +744,14 @@ export class StageRuntime {
         s.spellName = '';
         game.endBossSpell?.();
         this.turnBulletsIntoPointItems(game);
+        // Ending a spell also shatters the spell's helper enemies (Letty's
+        // ice orbs, snowflake spinners). Evidence in ecldata1: hp-interrupt
+        // transitions clean helpers with an explicit ins_94 at the next
+        // phase's start (Sub42/48/52/55), but end-of-life callbacks rely on
+        // ins_91 itself — Letty's death sub (Sub51) has no ins_94, yet her
+        // Sub50 orbs die with the boss in the original. Cirno's Sub27 pairs
+        // ins_91 with a redundant ins_94, so this stays a no-op there.
+        this.killNonBossEnemies(game);
         return null;
       case 92: case 93: { // spawn child enemy: (sub, x, y, z, life, item, score)
         this.spawnEclEnemy(game, {
@@ -1024,6 +1032,13 @@ export class StageRuntime {
     if (s.deathCallbackSub >= 0) {
       game.spawnEnemyDeathEffect?.(e);
       e.hp = 1;
+      // Damage off the instant the death callback starts, or shots landing
+      // during the transition/death animation would re-trigger death with no
+      // callback left and hard-remove the enemy mid-sequence (Letty's Sub51
+      // would lose its ins_91 wipe). Matches the original: bosses are
+      // invulnerable between phases, and every live phase re-arms damage
+      // itself via ins_103(1) (Sub38/39/42/48...).
+      s.canTakeDamage = false;
       s.lifeCallbackThreshold = -1;
       s.timerCallbackThreshold = -1;
       s.scheduledTimerSubs.length = 0;
