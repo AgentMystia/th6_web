@@ -48,11 +48,39 @@ export interface PlayerBullet {
 }
 
 // Option (orb) offsets relative to the player; fire origins for orb shots.
-// Approximation pending exe-accurate tables (documented deviation).
+//
+// Th07.exe (v1.00b) Player::Update (fcn.0043be00 @ 0x43be00) drives a glide
+// state machine at player+0x2410. Unfocused (settled) offsets are CONFIRMED
+// exe-hardcoded immediates from that machine's terminal "case 3" state:
+// orb 1 x=-32.0 @ 0x43cb30, y=8.0 @ 0x43cb29; orb 2 mirrors orb 1 across x
+// (this codebase's existing left/right symmetry convention). Note the y
+// sign: +8 (below the player), not -8 as previously guessed here.
+//
+// The exe's focused layout is NOT a static offset at all: options
+// continuously orbit the player on a radius-24.0 circle (fmul by 0x48ec78
+// = 24.0 @ 0x43ce2d and 0x43ce59, confirmed), phase-shifted by pi/2 (fadd
+// 0x48eaec = 1.5708 @ 0x43ce16 and 0x43ce42, confirmed), driven by a
+// per-frame angle (player+0xb7e58) whose increment site was not located
+// within this function -- so the rotation rate and orb 2's phase offset
+// are NOT confirmed. We keep a static focused approximation below pending
+// that follow-up (see ghidra-re-notes.md, Target A).
 const ORB_OFFSETS = {
-  unfocused: { 1: { x: -32, y: -8 }, 2: { x: 32, y: -8 } },
+  unfocused: { 1: { x: -32, y: 8 }, 2: { x: 32, y: 8 } },
   focused: { 1: { x: -16, y: -24 }, 2: { x: 16, y: -24 } }
 } as const;
+
+// Frames to glide between the unfocused/focused layouts on a focus-state
+// change, and the interpolation formula, both CONFIRMED directly from the
+// exe's tween state machine (fcn.0043be00 @ 0x43ca0b-0x43ca56): x eases
+// LINEARLY in t while y eases QUADRATICALLY in t*t -- the two axes use
+// different easing. t = frame / GLIDE_FRAMES, with an internal frame
+// counter compared against 8 @ 0x43ca61 (fdiv by 0x48eacc = 8.0 @
+// 0x43ca1d). The live instance decoded had fromY=24/toY=8, producing
+// exactly y = 24 - 16*t*t (fmul 0x48ead4=32.0 @ 0x43ca2f, fadd
+// 0x48ed44=-32.0 @ 0x43ca35 for x; fmul 0x48ed68=-16.0 @ 0x43ca4d, fadd
+// 0x48ec78=24.0 @ 0x43ca50 for y) -- i.e. lerp(fromX,toX,t) and
+// lerp(fromY,toY,t*t) in general.
+const GLIDE_FRAMES = 8;
 
 // PCB's shot cadence runs on a 60-frame cycle (Priw8's sht-webedit docs:
 // "PCB - shooting uses a 60-frame timer. For bullets to fire consistently,
@@ -69,6 +97,9 @@ export class Player {
   readonly focused: Sht;
   readonly anm: Anm;
   focusHeld = false;
+  // Frames elapsed since the last focus-state toggle, saturating at
+  // GLIDE_FRAMES once the orb glide has settled; see orbOffset().
+  private focusGlideFrame = GLIDE_FRAMES;
   shooting = false;
   // -1 while not shooting so that the first held frame lands on fireFrame 0
   // (see update()): a shot with delay 0 must fire on the very press frame,
@@ -118,7 +149,13 @@ export class Player {
   }
 
   update(input: InputFrame): void {
-    this.focusHeld = input.held.has('focus');
+    const focused = input.held.has('focus');
+    if (focused !== this.focusHeld) {
+      this.focusHeld = focused;
+      this.focusGlideFrame = 0;
+    } else if (this.focusGlideFrame < GLIDE_FRAMES) {
+      this.focusGlideFrame++;
+    }
     if (this.invulnFrames > 0) this.invulnFrames--;
     if (this.bombInvuln > 0) this.bombInvuln--;
     if (this.bombTimer > 0) this.bombTimer--;
@@ -167,7 +204,11 @@ export class Player {
   // Fires shooter entries whose cadence matches this frame; called once per
   // frame while the shoot button is held.
   orbOffset(orb: 1 | 2): { x: number; y: number } {
-    return ORB_OFFSETS[this.focusHeld ? 'focused' : 'unfocused'][orb];
+    const to = ORB_OFFSETS[this.focusHeld ? 'focused' : 'unfocused'][orb];
+    if (this.focusGlideFrame >= GLIDE_FRAMES) return to;
+    const from = ORB_OFFSETS[this.focusHeld ? 'unfocused' : 'focused'][orb];
+    const t = this.focusGlideFrame / GLIDE_FRAMES;
+    return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t * t };
   }
 
   fire(): PlayerBullet[] {

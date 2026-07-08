@@ -55,6 +55,20 @@ test('cherry item gain scales with captured spells; score gated on max', () => {
   assert.equal(c.cherryItemScore(100, 128, false), 50000);
 });
 
+// Th07.exe (v1.00b) fcn.00430c10 @ 0x431358: below the PoC line, a cherry
+// item at CherryMax decays by a flat -100 score per pixel of distance from
+// the PoC line (not proportional to remaining playfield height), floored
+// to the nearest 10.
+test('cherry item score below the PoC line decays 100/px, floored to 10 (exe @ 0x431358)', () => {
+  const c = new CherrySystem();
+  c.cherry = c.cherryMax;
+  assert.equal(c.cherryItemScore(228, 128, false), 40000); // 50000 - 100*100
+  assert.equal(c.cherryItemScore(130, 128, false), 49800); // 50000 - 100*2
+  assert.equal(c.cherryItemScore(133, 128, false), 49500); // 50000 - 100*5
+  assert.equal(c.cherryItemScore(128, 128, false), 50000); // at the line: flat
+  assert.equal(c.cherryItemScore(400, 128, false), 22800); // 50000 - 100*272
+});
+
 test('death loses the SHT ratio; cherry never exceeds max', () => {
   const c = new CherrySystem();
   for (let i = 0; i < 30000; i++) c.onShotHit(false);

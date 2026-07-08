@@ -48,6 +48,17 @@ export class Anm {
   readonly entries: AnmEntry[] = [];
   readonly sprites = new Map<number, AnmSprite>();
   private scriptRefs = new Map<number, ScriptRef>();
+  // Per-entry script tables, parallel to `entries` (index-matched). Some ANM
+  // files (title01.anm is the prominent case: it bundles the title logo, the
+  // 8 main-menu items, and several sub-screens' captions into one file) have
+  // multiple entries that each independently reuse small/overlapping on-disk
+  // script ids (id 0 alone appears in 5 different entries there) — the flat
+  // `scriptRefs` map above silently lets the last-parsed entry win those ids,
+  // shadowing every earlier entry's same-numbered script. `scriptRefInEntry`
+  // below disambiguates by entry index for callers that need it (kept
+  // additive/opt-in so every existing caller of scriptRef/hasScript, which
+  // assume a single flat id space, is unaffected).
+  private entryScripts: Map<number, ScriptRef>[] = [];
 
   constructor(source: string | Uint8Array, name = 'anm') {
     this.view = new BinaryView(source);
@@ -96,12 +107,16 @@ export class Anm {
       }
       entryBase += maxEmbedded + 1;
       ptr += spriteCount * 4;
+      const entryScriptMap = new Map<number, ScriptRef>();
       for (let i = 0; i < scriptCount; i++) {
         const id = v.i32(ptr + i * 8);
         const start = entryStart + v.u32(ptr + i * 8 + 4);
-        this.scriptRefs.set(id, { id, start, imageKey });
+        const ref: ScriptRef = { id, start, imageKey };
+        this.scriptRefs.set(id, ref);
+        entryScriptMap.set(id, ref);
         entry.scriptIds.push(id);
       }
+      this.entryScripts.push(entryScriptMap);
       this.entries.push(entry);
       if (!nextOffset) break;
       entryStart += nextOffset;
@@ -118,6 +133,19 @@ export class Anm {
     return ref;
   }
 
+  // Entry-scoped variants of hasScript/scriptRef — see the `entryScripts`
+  // comment above. `entryIndex` matches the position of the entry in
+  // `this.entries` (0-based, file order).
+  hasScriptInEntry(entryIndex: number, id: number): boolean {
+    return this.entryScripts[entryIndex]?.has(id) ?? false;
+  }
+
+  scriptRefInEntry(entryIndex: number, id: number): ScriptRef {
+    const ref = this.entryScripts[entryIndex]?.get(id);
+    if (!ref) throw new Error(`${this.name}: missing ANM script ${id} in entry ${entryIndex}`);
+    return ref;
+  }
+
   get scriptIds(): number[] {
     return [...this.scriptRefs.keys()];
   }
@@ -131,7 +159,9 @@ type Interp = {
   to: number[];
 };
 
-function applyFormula(t: number, formula: number): number {
+// Exported for reuse by other script interpreters that share this easing
+// table (e.g. formats/std.ts's camera/facing keyframe interpolation).
+export function applyFormula(t: number, formula: number): number {
   switch (formula) {
     case 1: return t * t;
     case 2: return t * t * t;
@@ -179,6 +209,11 @@ export interface AnmRunnerOptions {
   spriteIndexOffset?: number;
   rng?: Rng;
   color?: number;
+  // Disambiguates `scriptId` when the ANM file has multiple entries that
+  // reuse overlapping on-disk ids (see Anm.scriptRefInEntry). Index matches
+  // Anm.entries (0-based, file order). Omit for the plain flat lookup used
+  // by every other (single-entry, or non-colliding) caller.
+  entryIndex?: number;
 }
 
 export class AnmRunner {
@@ -230,7 +265,7 @@ export class AnmRunner {
   constructor(anm: Anm, scriptId: number, options: AnmRunnerOptions = {}) {
     this.anm = anm;
     this.scriptId = scriptId;
-    const ref = anm.scriptRef(scriptId);
+    const ref = options.entryIndex != null ? anm.scriptRefInEntry(options.entryIndex, scriptId) : anm.scriptRef(scriptId);
     this.scriptStart = ref.start;
     this.imageKey = ref.imageKey;
     this.ip = ref.start;

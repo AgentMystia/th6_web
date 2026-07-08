@@ -20,6 +20,13 @@
 //   above the PoC (decaying below); they always add 1000 + 100 × (captured
 //   spell cards) to Cherry and Cherry+.
 
+// Th07.exe (v1.00b): the 50000 border-trigger threshold (0xC350) and the
+// 540-frame border duration (0x21C) are both CONFIRMED directly in the exe.
+// 50000: e.g. the CherryPlus-vs-max compares @ 0x4313fb/0x43142c ("cmp eax,
+// 0xc350") in fcn.00430c10, and the flat cherry-item-at-max score (see
+// cherryItemScore below). 540: the border end-of-life fade computes
+// "540 - elapsed" @ 0x43e55d ("mov eax, 0x21c; sub eax, elapsed"),
+// producing a 30-frame fade transition at both ends of the border.
 export const CHERRY_PLUS_MAX = 50000;
 export const BORDER_DURATION = 540;
 export const INITIAL_CHERRY_MAX = 50000;
@@ -147,10 +154,21 @@ export class CherrySystem {
     return Math.max(10, Math.trunc(this.cherry * (1 - t * 0.8) / 10) * 10);
   }
 
+  // Th07.exe (v1.00b) fcn.00430c10 @ 0x431358 ("case 1" of an item-value
+  // switch reached via the 50000/0xC350 anchor): CONFIRMED the decay below
+  // the PoC line is a flat -100 score per pixel of |y - pocLineY| (imul by
+  // 100 @ 0x4313b2), not proportional to remaining playfield height as
+  // previously approximated here. The final value still floors to the
+  // nearest 10 (cdq/idiv 10, subtract remainder @ 0x431458-0x431468,
+  // matching the trunc-to-10 already used below). A further "excess
+  // CherryMax headroom" bonus term was observed in the same function
+  // (@ 0x4313e1-0x431455) but its struct-field semantics were not pinned
+  // down with enough confidence to encode here -- see ghidra-re-notes.md,
+  // Target B.
   cherryItemScore(y: number, pocLineY: number, autoCollected: boolean): number {
     if (this.cherry < this.cherryMax) return 0;
     if (autoCollected || y <= pocLineY) return 50000;
-    const t = Math.min(1, Math.max(0, (y - pocLineY) / (448 - pocLineY)));
-    return Math.max(100, Math.trunc(50000 * (1 - t) / 10) * 10);
+    const raw = 50000 - 100 * Math.abs(y - pocLineY);
+    return Math.max(0, Math.trunc(raw / 10) * 10);
   }
 }
