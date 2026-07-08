@@ -336,6 +336,10 @@ class PlayerSelectMenu {
         audio.sfx('se_ok00');
         this.step = 'shotType';
         this.header = makeHeader(this.anm, 2);
+        // Script label 10 = "character confirmed": dims the portrait to
+        // half-alpha so the shot-type descriptions read on top of it.
+        this.portrait.interrupt(10);
+        this.showShotDesc();
         return null;
       }
       if (input.pressed.has('back')) {
@@ -356,6 +360,9 @@ class PlayerSelectMenu {
         audio.sfx('se_cancel00');
         this.step = 'character';
         this.header = makeHeader(this.anm, 1);
+        // Re-enter the character step: rebuild the portrait/nameplate in
+        // their bright "active" state (interrupt 9).
+        this.enterCharacter(this.charCursor);
         return null;
       }
     }
