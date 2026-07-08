@@ -1,5 +1,8 @@
 # TH07 Web — Perfect Cherry Blossom
 
+**▶ 在线游玩 / Play online: <https://agentmystia.github.io/th07_web/>**
+（发布仓库 / release repo: [AgentMystia/th07_web](https://github.com/AgentMystia/th07_web)）
+
 [中文](#中文) | [English](#english)
 
 ## 中文
