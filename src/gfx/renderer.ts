@@ -161,6 +161,93 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Draws one texture-mapped triangle by solving the general 3-point affine
+  // fit (source (u,v) -> destination (x,y)) and using it as the canvas
+  // transform for an unclipped `drawImage(img, 0, 0)`, clipped to the
+  // triangle path. Works for any non-degenerate triangle, not just ones
+  // axis-aligned in UV space.
+  private drawAffineTriangle(
+    img: CanvasImageSource,
+    u0: number, v0: number, x0: number, y0: number,
+    u1: number, v1: number, x1: number, y1: number,
+    u2: number, v2: number, x2: number, y2: number
+  ): void {
+    const denom = (u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0);
+    if (!Number.isFinite(denom) || Math.abs(denom) < 1e-6) return;
+    const a = ((x1 - x0) * (v2 - v0) - (x2 - x0) * (v1 - v0)) / denom;
+    const b = ((y1 - y0) * (v2 - v0) - (y2 - y0) * (v1 - v0)) / denom;
+    const c = ((u1 - u0) * (x2 - x0) - (u2 - u0) * (x1 - x0)) / denom;
+    const d = ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) / denom;
+    const e = x0 - a * u0 - c * v0;
+    const f = y0 - b * u0 - d * v0;
+    if (![a, b, c, d, e, f].every(Number.isFinite)) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.transform(a, b, c, d, e, f);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+  }
+
+  // Returns a tinted copy of an atlas sub-rect (cached), for use as the
+  // source image of a textured-quad draw. Public wrapper around the same
+  // tint cache drawAnmFrame uses.
+  tintedRect(imageKey: string, sx: number, sy: number, sw: number, sh: number, color: number): HTMLCanvasElement | null {
+    const img = this.assets[imageKey];
+    if (!img) return null;
+    return this.tintedSpriteCanvas(img, sx, sy, sw, sh, color);
+  }
+
+  // Perspective-correct-enough textured quad: two affine triangles sharing
+  // the tl/br diagonal. `corners` and `src` must already be in the same
+  // coordinate space (src in atlas pixels if `img` is the full atlas, or in
+  // 0..w/0..h local pixels if `img` is a pre-tinted sub-canvas).
+  drawTexturedQuadCell(
+    img: CanvasImageSource,
+    src: { u0: number; v0: number; u1: number; v1: number },
+    corners: { tl: { x: number; y: number }; tr: { x: number; y: number }; bl: { x: number; y: number }; br: { x: number; y: number } }
+  ): void {
+    this.drawAffineTriangle(
+      img,
+      src.u0, src.v0, corners.tl.x, corners.tl.y,
+      src.u1, src.v0, corners.tr.x, corners.tr.y,
+      src.u0, src.v1, corners.bl.x, corners.bl.y
+    );
+    this.drawAffineTriangle(
+      img,
+      src.u1, src.v0, corners.tr.x, corners.tr.y,
+      src.u1, src.v1, corners.br.x, corners.br.y,
+      src.u0, src.v1, corners.bl.x, corners.bl.y
+    );
+  }
+
+  // Flat-fills a projected quad with a translucent fog color (distance fog).
+  fillFogQuad(
+    corners: { tl: { x: number; y: number }; tr: { x: number; y: number }; bl: { x: number; y: number }; br: { x: number; y: number } },
+    color: string,
+    alpha: number
+  ): void {
+    if (alpha <= 0.003) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(corners.tl.x, corners.tl.y);
+    ctx.lineTo(corners.tr.x, corners.tr.y);
+    ctx.lineTo(corners.br.x, corners.br.y);
+    ctx.lineTo(corners.bl.x, corners.bl.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   clipPlayfield(fn: () => void): void {
     const ctx = this.ctx;
     ctx.save();

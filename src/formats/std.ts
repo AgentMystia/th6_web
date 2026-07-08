@@ -247,18 +247,30 @@ export class Std {
   }
 
   // 30° vertical FOV perspective projection into playfield coordinates.
-  project(x: number, y: number, z: number, playfield: { x: number; y: number; width: number; height: number }): { x: number; y: number; scale: number } | null {
+  //
+  // STD world space, confirmed by cross-referencing stage1.std's raw quad and
+  // instance bytes against thtk's dump (reference/DSTD7/stage1.dstd): the
+  // *second* field (named "y" by thtk/this parser) is forward depth — ground
+  // instances span it from -56 to 6600 in 256-unit steps matching the ground
+  // quad's own 256-unit "height", i.e. the tiles butt up depth-wise — while
+  // the *third* field ("z") stays within a few hundred units, matching camera
+  // eye height. This function used to treat y as vertical and z as depth,
+  // which put every background quad off-screen (a depth value like 6600 read
+  // as a vertical offset). Callers now pass (lateral, depth, height).
+  project(x: number, depth: number, height: number, playfield: { x: number; y: number; width: number; height: number }): { x: number; y: number; scale: number } | null {
     const fov = 30 * DEG;
     const halfW = playfield.width / 2;
     const halfH = playfield.height / 2;
     const dist = halfH / Math.tan(fov / 2);
-    const viewZ = z + dist;
-    if (viewZ <= 100) return null;
+    const viewZ = depth + dist;
+    if (viewZ <= 40) return null;
     const aspect = playfield.width / playfield.height;
     const yScale = 1 / Math.tan(fov / 2);
     const xScale = yScale / aspect;
-    const nx = ((x - halfW) * xScale) / viewZ;
-    const ny = ((-y + halfH) * yScale) / viewZ;
+    const nx = (x * xScale) / viewZ;
+    // Negated: decorative quad stacks (e.g. bush/tree tiers) use *more*
+    // negative height for the tier meant to read as higher up.
+    const ny = (-height * yScale) / viewZ;
     return {
       x: playfield.x + playfield.width * (0.5 + nx * 0.5),
       y: playfield.y + playfield.height * (0.5 - ny * 0.5),

@@ -1,11 +1,11 @@
 import { StageRuntime } from './eclvm';
 import type { GameHost, Enemy, EnemyBullet, EnemyLaser, ItemEntity, ItemType, EffectParticle } from './types';
 import { Rng } from '../core/rng';
-import { normalizeAngle } from '../core/util';
+import { normalizeAngle, clamp, DEG } from '../core/util';
 import type { InputFrame } from '../core/input';
 import { Renderer, PLAYFIELD } from '../gfx/renderer';
 import type { GameAssets } from './assets';
-import { AnmRunner } from '../formats/anm';
+import { AnmRunner, type AnmFrame } from '../formats/anm';
 import { TH07_DATA } from '../data/th07-data';
 import type { AudioBus } from '../audio/audio';
 import { Player, type CharacterId, type PlayerBullet } from './player';
@@ -33,6 +33,34 @@ const ITEM_SPRITES: Record<ItemType, number> = {
 // ECL op 142 parameter appears related but is not yet confirmed (TH07-TODO).
 const ENEMY_FRAME_DAMAGE_CAP = 70;
 
+// TH07-TODO(approximation): stage1.std's camera-position script op is never
+// re-issued after frame 0 (always 0,0,0), yet the ground/decoration
+// instances form a ~6.6k-unit-deep tunnel (27 tiles, 256 units apart) that
+// only makes visual sense with a continuously advancing camera — fog
+// near/far only spans a few hundred units, so most of the tunnel sits
+// beyond the fog, waiting to scroll into view. The script does set one
+// otherwise-unhandled op once at frame 0 (`ins_9(0, 1.0, 0.0)`); 1.0 is a
+// plausible forward speed (it also roughly matches the tunnel length against
+// the stage's ~6000-frame duration), so it's approximated as a constant
+// per-frame dolly along the depth axis.
+const BG_SCROLL_SPEED = 1;
+// Upper bound on subdivided quad cells drawn per frame, to keep Canvas2D
+// draw-call count bounded regardless of how many STD instances are in view.
+const BG_CELL_BUDGET = 320;
+
+// TH07-TODO(approximation): std.camera() always reports height 0 (the
+// script's op 0 — read as camera position — is never called with a nonzero
+// value), but the ground/decoration height values (-12 to -126) are tiny
+// next to the 30° FOV's ~836-unit focal distance: with a camera at height 0
+// the ground projects within a few percent of the horizon line at every
+// depth and never fills the frame. The script does set one otherwise-
+// unhandled op once, `ins_7(0, 500, 400)`, which looks like a plausible
+// (lateral, depth, height) camera position — height=400 is the right order
+// of magnitude to lift the camera above the ground plane. Approximated here
+// as a constant lift (rather than wiring a speculative opcode into std.ts's
+// trusted camera model).
+const BG_CAMERA_LIFT = 224;
+
 export class StageScene implements GameHost {
   rng = new Rng();
   difficulty = 1;
@@ -54,6 +82,10 @@ export class StageScene implements GameHost {
   graze = 0;
   pointItems = 0;
   private frameDamage = new Map<number, number>();
+  // One cached AnmRunner per stg1bg script id, stepped forward to the
+  // current STD frame; shared by every quad instance that references it
+  // (see drawBackground / bgAnmFrame).
+  private bgAnmCache = new Map<number, { runner: AnmRunner; frame: number }>();
   gameOver = false;
   cherry = new CherrySystem({
     onBorderStart: () => this.playSfx(27),
@@ -766,44 +798,222 @@ export class StageScene implements GameHost {
     if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
   }
 
-  // Pseudo-3D stage background: STD objects projected through the original
-  // camera path with fog. Quads are drawn as scaled billboards — a documented
-  // approximation of the original textured-quad renderer.
+  // Background ANM scripts (stg1bg scripts 0-2) are static, time-driven
+  // scripts with no per-instance branching, so one cached AnmRunner per
+  // script id — stepped forward to the current STD frame — is shared by
+  // every quad instance that references it.
+  private bgAnmFrame(scriptId: number, targetFrame: number): AnmFrame | null {
+    let entry = this.bgAnmCache.get(scriptId);
+    if (!entry || targetFrame < entry.frame) {
+      entry = { runner: new AnmRunner(this.assets.anms.stg1bg, scriptId), frame: 0 };
+      this.bgAnmCache.set(scriptId, entry);
+    }
+    while (entry.frame < targetFrame) {
+      entry.runner.update();
+      entry.frame++;
+    }
+    return entry.runner.spriteFrame();
+  }
+
+  // Backdrop crescent moon: stage1.std has exactly 2 objects, and stg1bg.anm
+  // exactly 3 scripts (verified against the thstd/thanm disassembly of the
+  // original data) — no moon quad exists anywhere in stage 1's extracted STD
+  // data, so the original composites it outside the STD scene. Approximated
+  // procedurally here (two overlapping arcs — a pale fill, then an offset
+  // fog-colored arc carving a crescent), fixed in screen space behind the
+  // ground geometry.
+  private drawBackgroundMoon(r: Renderer, ox: number, oy: number, fogCss: string): void {
+    const ctx = r.ctx;
+    const cx = ox + PLAYFIELD.width * 0.7;
+    const cy = oy + PLAYFIELD.height * 0.24;
+    const radius = PLAYFIELD.width * 0.2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(228, 231, 246, 0.85)';
+    ctx.shadowColor = 'rgba(210, 216, 255, 0.45)';
+    ctx.shadowBlur = radius * 0.6;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(cx + radius * 0.52, cy - radius * 0.16, radius * 0.94, 0, Math.PI * 2);
+    ctx.fillStyle = fogCss;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Pseudo-3D stage background: STD quad instances, perspective-projected
+  // (see Std#project for the world-space axis convention this relies on),
+  // subdivided along depth into strips for perspective-correct-enough
+  // texture mapping, sorted back-to-front, with linear distance fog.
   private drawBackground(r: Renderer, ox: number, oy: number): void {
     const std = this.runtime.std;
-    const frame = std.frame;
+    // Not std.frame: stage1.std's script pauses it (op 5) at frame 0 and
+    // stage 1's ECL never issues the unpause opcode (125) to release it, so
+    // std.frame is permanently 0 — camera()/fog()/facing() all accept an
+    // explicit frame argument, so the scene's own always-advancing
+    // stageFrame drives the background instead.
+    const frame = this.stageFrame;
     const cam = std.camera(frame);
     const fog = std.fog(frame);
     const ctx = r.ctx;
     ctx.fillStyle = fog.css;
     ctx.fillRect(ox, oy, PLAYFIELD.width, PLAYFIELD.height);
-    const bgAnm = this.assets.anms.stg1bg;
-    const draws: { z: number; sprite: number; x: number; y: number; scale: number; alpha: number }[] = [];
+    this.drawBackgroundMoon(r, ox, oy, fog.css);
+
+    const playfield = { x: ox, y: oy, width: PLAYFIELD.width, height: PLAYFIELD.height };
+    const scrollDepth = cam.y + frame * BG_SCROLL_SPEED;
+
+    type Candidate = {
+      depthCenter: number;
+      lateral0: number;
+      lateral1: number;
+      depth0: number;
+      depth1: number;
+      height: number;
+      script: number;
+    };
+    type Job = Candidate & {
+      corners: { tl: { x: number; y: number }; tr: { x: number; y: number }; bl: { x: number; y: number }; br: { x: number; y: number } };
+      spriteFrame: AnmFrame;
+      steps: number;
+    };
+
+    // Ground (object 0) instances come in a mirrored left/right pair (x=-192
+    // and x=320, meeting seamlessly at world lateral 0) only for the 4
+    // closest tiles in stage1.std; every farther tile only has the x=-192
+    // side, which otherwise renders as a one-sided gap with fog/sky showing
+    // through where the mirror would be. Mirroring the lone side across
+    // lateral 0 keeps the ground continuous — an approximation, but a
+    // narrow one (only fills a gap that's otherwise there, doesn't invent
+    // new depths/textures).
+    const groundInstanceXsByY = new Map<number, Set<number>>();
+    for (const inst of std.instances) {
+      if (inst.id !== 0) continue;
+      const set = groundInstanceXsByY.get(inst.y) ?? new Set<number>();
+      set.add(inst.x);
+      groundInstanceXsByY.set(inst.y, set);
+    }
+
+    const candidates: Candidate[] = [];
     for (const inst of std.instances) {
       const obj = std.objects[inst.id];
       if (!obj) continue;
+      const mirrorGround = inst.id === 0 && (groundInstanceXsByY.get(inst.y)?.size ?? 0) < 2;
       for (const quad of obj.quads) {
-        const wx = inst.x + quad.x - cam.x;
-        const wy = inst.y + quad.y - cam.y;
-        const wz = inst.z + quad.z - cam.z;
-        const proj = std.project(wx, wy, wz, { x: 0, y: 0, width: PLAYFIELD.width, height: PLAYFIELD.height });
-        if (!proj) continue;
-        const depth = wz + 560;
-        const alpha = Math.max(0, Math.min(1, 1 - (depth - fog.near) / Math.max(1, fog.far - fog.near)));
-        if (alpha <= 0.02) continue;
-        draws.push({ z: depth, sprite: quad.script, x: proj.x, y: proj.y, scale: proj.scale, alpha });
+        const lateral = inst.x + quad.x - cam.x;
+        const depth = inst.y + quad.y - scrollDepth;
+        const height = inst.z + quad.z - cam.z + BG_CAMERA_LIFT;
+        const halfW = quad.w / 2;
+        const halfH = quad.h / 2;
+        if (depth + halfH < -400) continue; // fully passed the camera
+        if (depth - halfH > fog.far + 320) continue; // fully consumed by fog
+        candidates.push({
+          depthCenter: depth,
+          lateral0: lateral - halfW,
+          lateral1: lateral + halfW,
+          depth0: depth - halfH,
+          depth1: depth + halfH,
+          height,
+          script: quad.script
+        });
+        if (mirrorGround) {
+          candidates.push({
+            depthCenter: depth,
+            lateral0: -lateral - halfW,
+            lateral1: -lateral + halfW,
+            depth0: depth - halfH,
+            depth1: depth + halfH,
+            height,
+            script: quad.script
+          });
+        }
       }
     }
-    draws.sort((a, b) => b.z - a.z);
-    for (const d of draws) {
-      const ref = bgAnm.hasScript(d.sprite) ? bgAnm.scriptRef(d.sprite) : null;
-      const spriteId = bgAnm.entries[0]?.spriteIds[d.sprite] ?? d.sprite;
-      const rect = bgAnm.sprites.get(spriteId);
-      if (!rect || !ref) continue;
-      r.drawSprite(rect.imageKey, rect.x, rect.y, rect.w, rect.h, ox + d.x, oy + d.y, {
-        scaleMultiplier: d.scale * 2,
-        alpha: d.alpha
-      });
+
+    // Allocate subdivision budget nearest-first (nearest quads are largest
+    // on screen and matter most for perspective correctness), then paint
+    // back-to-front for correct occlusion.
+    candidates.sort((a, b) => a.depthCenter - b.depthCenter);
+    const focalDist = (PLAYFIELD.height / 2) / Math.tan((30 * DEG) / 2);
+    let cellBudget = BG_CELL_BUDGET;
+    const jobs: Job[] = [];
+    for (const c of candidates) {
+      if (cellBudget <= 0) break;
+      const spriteFrame = this.bgAnmFrame(c.script, frame);
+      if (!spriteFrame || spriteFrame.alpha <= 0) continue;
+      const tl = std.project(c.lateral0, c.depth0, c.height, playfield);
+      const tr = std.project(c.lateral1, c.depth0, c.height, playfield);
+      const bl = std.project(c.lateral0, c.depth1, c.height, playfield);
+      const br = std.project(c.lateral1, c.depth1, c.height, playfield);
+      if (!tl || !tr || !bl || !br) continue;
+      const xs = [tl.x, tr.x, bl.x, br.x];
+      const ys = [tl.y, tr.y, bl.y, br.y];
+      if (Math.max(...xs) < ox - 24 || Math.min(...xs) > ox + PLAYFIELD.width + 24) continue;
+      if (Math.max(...ys) < oy - 24 || Math.min(...ys) > oy + PLAYFIELD.height + 24) continue;
+
+      const spanDepth = c.depth1 - c.depth0;
+      const nearViewZ = Math.max(60, c.depth0 + focalDist);
+      const steps = Math.max(1, Math.min(24, Math.min(cellBudget, Math.round((spanDepth / nearViewZ) * 14))));
+      cellBudget -= steps;
+      jobs.push({ ...c, corners: { tl, tr, bl, br }, spriteFrame, steps });
+    }
+    jobs.sort((a, b) => b.depthCenter - a.depthCenter);
+
+    const lateralExpand = 10; // world units; hides seams between laterally-adjacent tiles
+    for (const job of jobs) {
+      const rect = job.spriteFrame;
+      const tint = (rect.color & 0x00ffffff) !== 0x00ffffff;
+      const img = tint ? r.tintedRect(rect.imageKey, rect.x, rect.y, rect.w, rect.h, rect.color) : r.image(rect.imageKey);
+      if (!img) continue;
+      const srcX0 = tint ? 0 : rect.x;
+      const srcY0 = tint ? 0 : rect.y;
+      const flip = rect.scaleX < 0;
+      const l0 = job.lateral0 - lateralExpand;
+      const l1 = job.lateral1 + lateralExpand;
+      // UV is clamped to the sprite's own rect (unlike the geometry below):
+      // small decorative quads sit only a few px apart in the atlas (e.g.
+      // sprite1/sprite2), so letting UV overflow with the geometry would
+      // bleed in neighboring sprites. Clamping just stretches the outermost
+      // texel a hair instead — imperceptible at this scale.
+      const u0 = srcX0;
+      const u1 = srcX0 + rect.w;
+
+      ctx.save();
+      ctx.globalAlpha = rect.alpha / 255;
+      ctx.globalCompositeOperation = rect.blendAdd ? 'lighter' : 'source-over';
+
+      const spanDepth = job.depth1 - job.depth0;
+      // Fraction of [0,1] each cell's *geometry* is expanded by (UV stays
+      // clamped to the sprite, see above) — deliberately including the
+      // outer i=0/i=steps-1 edges. Canvas2D's antialiased path clipping
+      // otherwise leaves hairline gaps between adjacent cells, and between
+      // adjacent STD instances stacked in depth, showing the fog clear
+      // color through.
+      const slack = 0.06 + 0.6 / job.steps;
+      for (let i = 0; i < job.steps; i++) {
+        const t0 = i / job.steps - slack;
+        const t1 = (i + 1) / job.steps + slack;
+        const d0 = job.depth0 + t0 * spanDepth;
+        const d1 = job.depth0 + t1 * spanDepth;
+        const ptl = std.project(l0, d0, job.height, playfield);
+        const ptr = std.project(l1, d0, job.height, playfield);
+        const pbl = std.project(l0, d1, job.height, playfield);
+        const pbr = std.project(l1, d1, job.height, playfield);
+        if (!ptl || !ptr || !pbl || !pbr) continue;
+        const ct0 = clamp(t0, 0, 1);
+        const ct1 = clamp(t1, 0, 1);
+        const vLo = flip ? rect.h * (1 - ct1) : rect.h * ct0;
+        const vHi = flip ? rect.h * (1 - ct0) : rect.h * ct1;
+        r.drawTexturedQuadCell(img, { u0, v0: srcY0 + vLo, u1, v1: srcY0 + vHi }, { tl: ptl, tr: ptr, bl: pbl, br: pbr });
+      }
+      ctx.restore();
+
+      // Fog is applied once per quad rather than per cell: these background
+      // quads are small relative to fog.far - fog.near, so a per-quad
+      // approximation reads the same as per-cell fog.
+      const fogAlpha = clamp((job.depthCenter - fog.near) / Math.max(1, fog.far - fog.near), 0, 1);
+      if (fogAlpha > 0.01) r.fillFogQuad(job.corners, fog.css, fogAlpha);
     }
   }
 
