@@ -3,7 +3,7 @@ import type { GameHost, Enemy, EnemyBullet, EnemyLaser, ItemEntity, ItemType, Ef
 import { Rng } from '../core/rng';
 import { normalizeAngle, clamp } from '../core/util';
 import type { InputFrame } from '../core/input';
-import { Renderer, PLAYFIELD } from '../gfx/renderer';
+import { Renderer, PLAYFIELD, SCREEN_W } from '../gfx/renderer';
 import type { GameAssets } from './assets';
 import { AnmRunner, type AnmFrame } from '../formats/anm';
 import { TH07_DATA } from '../data/th07-data';
@@ -32,6 +32,31 @@ const ITEM_SPRITES: Record<ItemType, number> = {
 // Per-frame damage cap for a single enemy, from the TH06 engine family; the
 // ECL op 142 parameter appears related but is not yet confirmed (TH07-TODO).
 const ENEMY_FRAME_DAMAGE_CAP = 70;
+
+// front.png sprite rects [x,y,w,h], recovered from front.anm's entry0 sprite
+// table (see the HUD spec derived by thanm -l7 disassembly). The original
+// HUD blits these directly rather than typesetting text, so we do the same.
+const FRONT = {
+  logo: [128, 0, 128, 256], // 東方妖々夢 vertical logo panel
+  caption: [0, 0, 128, 80], // "Perfect Cherry Blossom"
+  hiscore: [0, 80, 64, 16],
+  score: [0, 96, 64, 16],
+  player: [0, 112, 64, 16],
+  bomb: [0, 128, 64, 16],
+  power: [0, 144, 64, 16],
+  graze: [0, 160, 64, 16],
+  point: [0, 176, 64, 16],
+  redStar: [64, 80, 16, 16], // life icon
+  blueStar: [80, 80, 16, 16], // bomb icon
+  tile32: [0, 224, 32, 32], // maroon frame-fill tile
+  strip128: [0, 240, 128, 16] // maroon frame-fill strip
+} as const;
+
+// ascii.png HUD numeral font: 8x12 digit glyphs in a row at texture y=208,
+// digit d at x=8*d (front.anm/ascii.anm spec §5.1). The sole HUD digit font.
+const DIGIT_W = 8;
+const DIGIT_H = 12;
+const DIGIT_Y = 208;
 
 // Per-quad cap on subdivided cells for perspective-correct-enough texture
 // mapping (see drawBackground); not a shared budget — stage 1 only has ~31
@@ -764,6 +789,7 @@ export class StageScene implements GameHost {
       }
       if (this.cherry.borderActive) this.drawBorder(r, ox, oy);
     });
+    this.drawFrame(r);
     this.drawSidebar(r);
     this.drawSpellOverlay(r);
     this.drawDialogue(r);
@@ -776,6 +802,43 @@ export class StageScene implements GameHost {
       r.text(`Stage Bonus  ${(this.graze * 10 + this.pointItems * 1000 + this.cherry.cherry).toLocaleString('en-US')}`, PLAYFIELD.x + 100, PLAYFIELD.y + 230, { size: 14 });
     }
     if (this.gameOver) r.text('GAME OVER', PLAYFIELD.x + 140, PLAYFIELD.y + 200, { size: 20, color: '#f66' });
+  }
+
+  // Ornate maroon screen frame: tiles front.png's sprite12 (32x32) and
+  // sprite13 (128x16) over every region outside the playfield. The tile
+  // sizes divide the border area exactly (top/bottom 128x16 bands ×5, side
+  // columns 32x32 grids), which is the spec's recommended construction — the
+  // ANM scripts carry the tiles but not their positions (engine-placed).
+  private drawFrame(r: Renderer): void {
+    const [tx, ty, tw, th] = FRONT.tile32;
+    const [sx, sy, sw, sh] = FRONT.strip128;
+    const right = PLAYFIELD.x + PLAYFIELD.width; // 416
+    const bottom = PLAYFIELD.y + PLAYFIELD.height; // 464
+    // Top & bottom bands (0..640 × 16), 128px strips.
+    for (let x = 0; x < SCREEN_W; x += sw) {
+      r.drawSprite('front', sx, sy, sw, sh, x, 0);
+      r.drawSprite('front', sx, sy, sw, sh, x, bottom);
+    }
+    // Left column and right sidebar background, 32×32 tiles.
+    for (let y = PLAYFIELD.y; y < bottom; y += th) {
+      for (let x = 0; x < PLAYFIELD.x; x += tw) r.drawSprite('front', tx, ty, tw, th, x, y);
+      for (let x = right; x < SCREEN_W; x += tw) r.drawSprite('front', tx, ty, tw, th, x, y);
+    }
+  }
+
+  // Blits a base-10 integer using the ascii.png 8x12 digit font, left edge at
+  // (x,y). Optionally zero-pads to `width` digits (scores are fixed-width in
+  // the original). Returns the x just past the last digit.
+  private drawNumber(r: Renderer, value: number, x: number, y: number, width = 0, alpha = 1): number {
+    let s = String(Math.max(0, Math.trunc(value)));
+    if (width > 0) s = s.padStart(width, '0');
+    for (let i = 0; i < s.length; i++) {
+      const d = s.charCodeAt(i) - 48;
+      if (d >= 0 && d <= 9) {
+        r.drawSprite('ascii', d * DIGIT_W, DIGIT_Y, DIGIT_W, DIGIT_H, x + i * DIGIT_W, y, { alpha });
+      }
+    }
+    return x + s.length * DIGIT_W;
   }
 
   // Background ANM scripts (stg1bg scripts 0-2) are static, time-driven
@@ -1025,55 +1088,60 @@ export class StageScene implements GameHost {
     ctx.restore();
   }
 
-  // PCB-style right sidebar: HiScore/Score, lives and bombs as stars, Power,
-  // Cherry / CherryMax, the Cherry+ border gauge, Graze and Point counters.
+  // PCB right sidebar, rebuilt from the original front.png sprites: the seven
+  // label bitmaps (HiScore/Score/Player/Bomb/Power/Graze/Point) at their
+  // exact resting columns, values in the ascii.png 8x12 digit font, life/bomb
+  // stars, the Power bar, and the 東方妖々夢 logo + caption watermark. The
+  // Cherry counters are NOT sidebar rows in the original (no such glyphs
+  // exist in front.png); they live in a bottom-edge readout, see below.
   private drawSidebar(r: Renderer): void {
     const ctx = r.ctx;
-    const x = 432;
+    const labelX = 432; // resting column for every front.png label (spec §1.2)
+    const valueX = 504; // digit readouts start just past the 64px label box
     const p = this.playerObj;
-    const num = (v: number) => v.toLocaleString('en-US').replace(/,/g, ',');
-    r.text('HiScore', x, 58, { size: 13, color: '#caa' });
-    r.text(num(Math.max(this.hiScore, this.score)), x + 78, 58, { size: 13 });
-    r.text('Score', x, 76, { size: 13, color: '#caa' });
-    r.text(num(this.score), x + 78, 76, { size: 13 });
+    const label = (rect: readonly number[], y: number) =>
+      r.drawSprite('front', rect[0], rect[1], rect[2], rect[3], labelX, y);
+    const star = (rect: readonly number[], sx: number, sy: number) =>
+      r.drawSprite('front', rect[0], rect[1], rect[2], rect[3], sx, sy);
 
-    r.text('Player', x, 106, { size: 13, color: '#d88' });
-    for (let i = 0; i < Math.max(0, p.lives); i++) {
-      this.drawStar(ctx, x + 78 + i * 16, 112, '#f45c5c');
-    }
-    r.text('Bomb', x, 124, { size: 13, color: '#8b8' });
-    for (let i = 0; i < Math.max(0, p.bombs); i++) {
-      this.drawStar(ctx, x + 78 + i * 16, 130, '#5cf47a');
-    }
+    // Logo panel + caption watermark (drawn first so text/labels sit on top).
+    r.drawSprite('front', FRONT.logo[0], FRONT.logo[1], FRONT.logo[2], FRONT.logo[3], 480, 208);
+    r.drawSprite('front', FRONT.caption[0], FRONT.caption[1], FRONT.caption[2], FRONT.caption[3], 448, 336);
 
-    r.text('Power', x, 152, { size: 13, color: '#b9a' });
-    r.text(p.power >= 128 ? 'MAX' : String(p.power), x + 78, 152, { size: 13, color: p.power >= 128 ? '#fd6' : '#fff' });
-    ctx.fillStyle = '#331122';
-    ctx.fillRect(x, 168, 176, 5);
-    ctx.fillStyle = '#e6a';
-    ctx.fillRect(x, 168, 176 * Math.min(1, p.power / 128), 5);
+    label(FRONT.hiscore, 48);
+    this.drawNumber(r, Math.max(this.hiScore, this.score), valueX, 50, 9);
+    label(FRONT.score, 64);
+    this.drawNumber(r, this.score, valueX, 66, 9);
 
-    r.text('Graze', x, 182, { size: 12, color: '#aab' });
-    r.text(String(this.graze), x + 78, 182, { size: 12 });
-    r.text('Point', x, 198, { size: 12, color: '#aab' });
-    r.text(String(this.pointItems), x + 78, 198, { size: 12 });
+    label(FRONT.player, 96);
+    for (let i = 0; i < Math.max(0, p.lives); i++) star(FRONT.redStar, valueX + i * 16, 96);
+    label(FRONT.bomb, 112);
+    for (let i = 0; i < Math.max(0, p.bombs); i++) star(FRONT.blueStar, valueX + i * 16, 112);
 
-    // Cherry block
-    r.text('Cherry', x, 228, { size: 13, color: '#f9c' });
-    r.text(num(this.cherry.cherry), x + 92, 228, { size: 13, color: '#fcd' });
-    r.text('CherryMax', x, 246, { size: 13, color: '#f9c' });
-    r.text(num(this.cherry.cherryMax), x + 92, 246, { size: 13, color: '#fcd' });
-    r.text('Cherry+', x, 264, { size: 13, color: '#f9c' });
-    r.text(num(this.cherry.cherryPlus), x + 92, 264, { size: 13, color: this.cherry.borderActive ? '#8df' : '#fcd' });
-    ctx.fillStyle = '#302';
-    ctx.fillRect(x, 280, 176, 6);
-    if (this.cherry.borderActive) {
-      ctx.fillStyle = '#8df';
-      ctx.fillRect(x, 280, 176 * (this.cherry.borderTimer / BORDER_DURATION), 6);
-    } else {
-      ctx.fillStyle = '#f6b';
-      ctx.fillRect(x, 280, 176 * (this.cherry.cherryPlus / CHERRY_PLUS_MAX), 6);
-    }
+    label(FRONT.power, 144);
+    if (p.power >= 128) r.text('MAX', valueX, 157, { size: 14, color: '#fd6' });
+    else this.drawNumber(r, p.power, valueX, 146);
+    ctx.fillStyle = '#3a1626';
+    ctx.fillRect(labelX, 164, 176, 4);
+    ctx.fillStyle = p.power >= 128 ? '#fd6' : '#e6a';
+    ctx.fillRect(labelX, 164, 176 * Math.min(1, p.power / 128), 4);
+
+    label(FRONT.graze, 160);
+    this.drawNumber(r, this.graze, valueX, 162);
+    label(FRONT.point, 176);
+    this.drawNumber(r, this.pointItems, valueX, 178);
+
+    // Cherry readout hugging the screen's bottom-left, using the ascii.png
+    // "Cherry+" banner sprite (spec §3.3) plus the current Cherry+ value and
+    // a thin border-charge bar — the original's bottom indicator, not a
+    // sidebar row.
+    r.drawSprite('ascii', 0, 224, 96, 16, PLAYFIELD.x, 448, { alpha: this.cherry.borderActive ? 1 : 0.85 });
+    this.drawNumber(r, this.cherry.borderActive ? this.cherry.borderTimer : this.cherry.cherryPlus, PLAYFIELD.x + 100, 450);
+    ctx.fillStyle = '#2a0817';
+    ctx.fillRect(PLAYFIELD.x, 462, PLAYFIELD.width, 2);
+    ctx.fillStyle = this.cherry.borderActive ? '#8df' : '#f6b';
+    const frac = this.cherry.borderActive ? this.cherry.borderTimer / BORDER_DURATION : this.cherry.cherryPlus / CHERRY_PLUS_MAX;
+    ctx.fillRect(PLAYFIELD.x, 462, PLAYFIELD.width * Math.min(1, frac), 2);
 
     if (this.bossActive) {
       const hp = Math.max(0, this.bossActive.hp);
@@ -1086,7 +1154,7 @@ export class StageScene implements GameHost {
         this.drawStar(ctx, PLAYFIELD.x + 12 + i * 12, 9, '#e55');
       }
       const seconds = Math.max(0, Math.trunc((this.timerThreshold() - this.bossActive.ecl.bossTimer) / 60));
-      r.text(String(seconds).padStart(2, '0'), PLAYFIELD.x + PLAYFIELD.width - 30, 12, { size: 13, color: seconds <= 9 ? '#f66' : '#fff' });
+      this.drawNumber(r, seconds, PLAYFIELD.x + PLAYFIELD.width - 20, PLAYFIELD.y + 4, 2);
       // Enemy position marker on the bottom edge (PCB feature).
       const bx = PLAYFIELD.x + Math.max(0, Math.min(PLAYFIELD.width, this.bossActive.x));
       ctx.fillStyle = '#f8bcd0';
